@@ -34,6 +34,8 @@
 #include "util.h"
 #include "osdefs.h"
 #include "loadso.h"
+#include "mem.h"
+#include "str.h"
 
 #include "backend/dmoz.h"
 
@@ -532,9 +534,11 @@ int dmoz_path_make_backup(const char *filename, int numbered)
 		free(buf);
 		return ret;
 	} else {
+		int ret;
 		sprintf(buf, "%s~", filename);
+		ret = dmoz_path_rename(filename, buf, 1);
 		free(buf);
-		return dmoz_path_rename(filename, buf, 1);
+		return ret;
 	}
 }
 
@@ -659,17 +663,19 @@ int dmoz_path_rename(const char *old, const char *new, int overwrite)
 	FSSpec old_spec, new_spec;
 
 	err = FSMakeFSSpec(0, 0, pold, &old_spec);
-	if (err != noErr) {
-		log_appendf(4, "FSMakeFSSpec: %d", (int)err);
+	switch (err) {
+	case noErr:
+		break;
+	case nsvErr:
+	case fnfErr:
+		errno = ENOENT;
+		return -1;
+	default:
+		log_appendf(4, "Unknown FSMakeFSSpec error: %d", (int)err);
 		return -1;
 	}
 
 	err = FSMakeFSSpec(0, 0, pnew, &new_spec);
-	if (err != noErr && (!overwrite || err != fnfErr)) {
-		log_appendf(4, "FSMakeFSSpec: %d", (int)err);
-		return -1;
-	}
-
 	if (err == fnfErr) {
 		// Create the output file
 		err = FSpCreate(&new_spec, '?\??\?', 'TEXT', smSystemScript);
@@ -679,6 +685,26 @@ int dmoz_path_rename(const char *old, const char *new, int overwrite)
 		}
 
 		FSpCreateResFile(&new_spec, '?\??\?', 'TEXT', smSystemScript);
+		err = ResError();
+		if (err != noErr) {
+			log_appendf(4, "FSpCreateResFile: %d\n", (int)err);
+			return -1;
+		}
+	} else if (overwrite && err == noErr) {
+		// do nothing, exchange the contents and delete
+	} else {
+		// handle error value and set error value appropriately
+		switch (err) {
+		case noErr:
+			errno = EEXIST;
+			return -1;
+		case nsvErr:
+			errno = ENOTDIR;
+			return -1;
+		default:
+			log_appendf(4, "Unknown FSMakeFSSpec error: %d", (int)err);
+			return -1;
+		}
 	}
 
 	// Exchange the data in the two files
@@ -1194,6 +1220,36 @@ char *dmoz_path_concat_len(const char *a, const char *b, int alen, int blen)
 
 	*p = '\0';
 
+	return ret;
+}
+
+char *dmoz_path_pretty_name(const char *filename)
+{
+	char *ret, *temp;
+	const char *ptr;
+	int len;
+
+	ptr = strrchr(filename, DIR_SEPARATOR);
+	ptr = ((ptr && ptr[1]) ? ptr + 1 : filename);
+	len = strrchr(ptr, '.') - ptr;
+	if (len <= 0) {
+		ret = str_dup(ptr);
+	} else {
+		ret = mem_calloc(len + 1, sizeof(char));
+		strncpy(ret, ptr, len);
+		ret[len] = 0;
+	}
+
+	/* change underscores to spaces (of course, this could be adapted
+	 * to use strpbrk and strip any number of characters) */
+	while ((temp = strchr(ret, '_')) != NULL)
+		*temp = ' ';
+
+	/* TODO | the first letter, and any letter following a space,
+	 * TODO | should be capitalized; multiple spaces should be cut
+	 * TODO | down to one */
+
+	str_trim(ret);
 	return ret;
 }
 
