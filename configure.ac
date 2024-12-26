@@ -146,6 +146,17 @@ AC_ARG_ENABLE(x11-linking,
 	X11_LINKING=$enableval,
 	X11_LINKING=no)
 
+dnl These are used in the Win32 build so that we can intermix mingw32 and mingw-w64 parts.
+dnl This is really a hack, and it would be nicer if we could avoid this, but unfortunately
+dnl there is no real windows toolchain available that allows to target super old windows
+dnl while also supporting new windows as well.
+dnl
+dnl We could also just declare all of what we need inside of the file itself, since we're
+dnl essentially already doing that already by dynamically loading. Oh well. For now this
+dnl will do, and I'll curse at myself when it breaks :)
+AC_ARG_VAR([MEDIAFOUNDATION_CFLAGS], [Extra compiler flags to use when compiling Media Foundation support.])
+AC_ARG_VAR([MEDIAFOUNDATION_LIBS], [Extra linker flags to use when compiling Media Foundation support.])
+
 dnl ------------------------------------------------------------------------
 
 dnl Check for standard programs
@@ -201,6 +212,21 @@ AC_SUBST([LIBM])
 
 AC_SUBST([LIBM])
 
+dnl PKG_CHECK_MODULES will abort if pkg-config is not found.
+dnl This is relatively new behavior; what I've decided to do
+dnl is to set PKG_CONFIG to false on failure, warn the user,
+dnl and handle PKG_CHECK_MODULES failing when the time comes.
+dnl
+dnl This allows users to install schism from source without
+dnl having to use pkg-config at all by specifying all of the
+dnl needed cflags and libs manually (which is also what we do
+dnl in many of our builds, since pkg-config is mostly a Unix-y
+dnl thing)
+PKG_PROG_PKG_CONFIG([0.9.0], [
+	PKG_CONFIG=false
+	AC_MSG_WARN([*** Failed to find pkg-config. Some dependencies may not be found even if installed.])
+])
+
 dnl Unicode crap
 PKG_CHECK_MODULES([UTF8PROC], [libutf8proc], [utf8proc_found=yes], [utf8proc_found=no])
 if test "x$utf8proc_found" = "xno"; then
@@ -223,7 +249,7 @@ AM_CONDITIONAL([NEED_UNSETENV], [test "x$ac_cv_func_unsetenv" = "xno"])
 AM_CONDITIONAL([NEED_GETOPT], [test "x$ac_cv_func_getopt_long" = "xno"])
 
 dnl Headers, typedef crap, et al.
-AC_CHECK_HEADERS(sys/time.h dirent.h limits.h signal.h unistd.h sys/param.h sys/ioctl.h sys/socket.h sys/soundcard.h poll.h sys/poll.h linux/fb.h)
+AC_CHECK_HEADERS(sys/time.h dirent.h limits.h signal.h unistd.h sys/param.h sys/ioctl.h sys/socket.h sys/soundcard.h poll.h sys/poll.h linux/fb.h sys/kd.h)
 
 AM_CONDITIONAL([USE_OSS], [false])
 if test "x$ac_cv_header_sys_soundcard_h" = "xyes"; then
@@ -605,11 +631,12 @@ AM_CONDITIONAL([USE_MEDIAFOUNDATION], false)
 if test "x$with_mediafoundation" = "xcheck" || test "x$with_mediafoundation" = "xyes"; then
 	dnl requires Windows 7 or newer, but doesn't link to the libraries to keep
 	dnl XP/Vista also working
+	dnl XXX this ought to be more specific
 	if test "x$use_win32" = "xyes"; then
 		AM_CONDITIONAL([USE_MEDIAFOUNDATION], true)
 		AC_DEFINE([USE_MEDIAFOUNDATION], [1], [Use Media Foundation sample loading])
 	elif test "x$with_mediafoundation" = "xyes"; then
-		AC_MSG_ERROR([*** Failed to find Media Foundation with MFCreateMFByteStreamOnStream])
+		AC_MSG_ERROR([*** Failed to find Media Foundation])
 	fi
 fi
 
