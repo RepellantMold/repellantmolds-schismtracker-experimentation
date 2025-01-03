@@ -97,7 +97,7 @@ static void _cfg_load_midi_part_locked(struct midi_port *q)
 	/* look for MIDI port sections */
 	for (c = cfg.sections; c; c = c->next) {
 		j = -1;
-		sscanf(c->name, "MIDI Port %d", &j);
+		if (sscanf(c->name, "MIDI Port %d", &j) != 1) continue;
 		if (j < 1) continue;
 		sn = cfg_get_string(&cfg, c->name, "name", buf, 255, NULL);
 		if (!sn) continue;
@@ -211,8 +211,8 @@ void cfg_save_midi(cfg_file_t *cfg)
 	/* write out only enabled midi ports */
 	i = 1;
 	mt_mutex_lock(midi_mutex);
-	q = NULL;
 	for (p = port_providers; p; p = p->next) {
+		q = NULL;
 		while (midi_port_foreach(p, &q)) {
 			ss = q->name;
 			if (!ss) continue;
@@ -220,7 +220,8 @@ void cfg_save_midi(cfg_file_t *cfg)
 			if (!*ss) continue;
 			if (!q->io) continue;
 
-			snprintf(buf, 32, "MIDI Port %u", i); i++;
+			snprintf(buf, 32, "MIDI Port %u", i);
+			i++;
 			cfg_set_string(cfg, buf, "name", ss);
 			ss = p->name;
 			if (ss) {
@@ -239,7 +240,7 @@ void cfg_save_midi(cfg_file_t *cfg)
 	/* delete other MIDI port sections */
 	for (c = cfg->sections; c; c = c->next) {
 		j = -1;
-		sscanf(c->name, "MIDI Port %d", &j);
+		if (sscanf(c->name, "MIDI Port %d", &j) != 1) continue;
 		if (j < i) continue;
 		c->omit = 1;
 	}
@@ -328,7 +329,7 @@ void midi_engine_stop(void)
 	if (!midi_mutex) return;
 
 	mt_mutex_lock(midi_mutex);
-	for (n = port_providers; n; n = n->next) {
+	for (n = port_providers; n; ) {
 		q = NULL;
 		while (midi_port_foreach(n, &q))
 			midi_port_unregister(q->num);
@@ -338,6 +339,7 @@ void midi_engine_stop(void)
 			mt_thread_wait(n->thread, NULL);
 		}
 		free(n->name);
+		n = n->next;
 		free(n);
 	}
 	_connected = 0;
@@ -397,6 +399,7 @@ struct midi_provider *midi_provider_register(const char *name,
 	}
 
 	mt_mutex_lock(midi_mutex);
+
 	n->next = port_providers;
 	port_providers = n;
 
@@ -484,7 +487,7 @@ int midi_port_register(struct midi_provider *pv, int inout, const char *name,
 int midi_port_foreach(struct midi_provider *p, struct midi_port **cursor)
 {
 	int i;
-	if (!midi_port_mutex) return 0;
+	if (!midi_port_mutex || !port_top || !port_count) return 0;
 
 	mt_mutex_lock(midi_port_mutex);
 	do {
@@ -492,10 +495,10 @@ int midi_port_foreach(struct midi_provider *p, struct midi_port **cursor)
 			i = 0;
 		} else {
 			i = ((*cursor)->num) + 1;
-			while (i < port_alloc && !port_top[i]) i++;
+			while (i < port_count && !port_top[i]) i++;
 		}
 
-		if (i >= port_alloc) {
+		if (i >= port_count) {
 			*cursor = NULL;
 			mt_mutex_unlock(midi_port_mutex);
 			return 0;
