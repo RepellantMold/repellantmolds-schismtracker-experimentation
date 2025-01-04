@@ -137,7 +137,7 @@ READ_INFO(ogg)
 
 /* STM seems to have a case insensitive magic string with several possible values, and only one byte
 is guaranteed to be the same in the whole file... yeagh. */
-READ_INFO(stm) LOAD_SONG(stm)
+READ_INFO(stm) LOAD_SONG(stm) SAVE_SONG(stm)
 
 /* An ID3 tag could actually be anywhere in an MP3 file, and there's no guarantee that it even exists
 at all. I might move this toward the top if I can figure out how to identify an MP3 more precisely. */

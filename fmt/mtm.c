@@ -123,7 +123,7 @@ int fmt_mtm_load_song(song_t *song, slurp_t *fp, unsigned int lflags)
 	nsmp = slurp_getc(fp);
 	attrib = slurp_getc(fp); /* attribute byte (unused) */
 	if (attrib == 'J')
-		sprintf(song->tracker_id, "Schism Tracker");
+		sprintf(song->tracker_id, "Schism Tracker (RM fork)");
 	rows = slurp_getc(fp); /* beats per track (translation: number of rows in every pattern) */
 	if (rows != 64)
 		todo |= 64;
@@ -164,7 +164,7 @@ int fmt_mtm_load_song(song_t *song, slurp_t *fp, unsigned int lflags)
 		slurp_read(fp, &tmplong, 4);
 		sample->loop_start = bswapLE32(tmplong);
 		slurp_read(fp, &tmplong, 4);
-		sample->loop_end = bswapLE32(tmplong);
+		sample->loop_end = bswapLE32(tmplong)-1;
 		if ((sample->loop_end - sample->loop_start) > 2) {
 			sample->flags |= CHN_LOOP;
 		} else {
@@ -842,7 +842,7 @@ int fmt_mtm_save_song(disko_t *fp, song_t *song)
 		csf_write_sample(fp, ss, SF_LE | SF_PCMU
 			| ((ss->flags & CHN_16BIT) ? SF_16 : SF_8)
 			| (SF_M),
-			UINT32_MAX);
+			(ss->flags & CHN_16BIT) ? UINT16_MAX : UINT32_MAX);
 	}
 
 	/* announce all the things we broke */
