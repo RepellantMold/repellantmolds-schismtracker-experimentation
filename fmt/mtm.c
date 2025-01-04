@@ -164,7 +164,7 @@ int fmt_mtm_load_song(song_t *song, slurp_t *fp, unsigned int lflags)
 		slurp_read(fp, &tmplong, 4);
 		sample->loop_start = bswapLE32(tmplong);
 		slurp_read(fp, &tmplong, 4);
-		sample->loop_end = bswapLE32(tmplong)-1;
+		sample->loop_end = bswapLE32(tmplong);
 		if ((sample->loop_end - sample->loop_start) > 2) {
 			sample->flags |= CHN_LOOP;
 		} else {
