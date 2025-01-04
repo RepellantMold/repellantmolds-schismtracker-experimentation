@@ -603,8 +603,11 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 				if (check_effect_memory && !out.param)
 					warn |= (1 << WARN_EFFECTMEMORY);
 
+				check_effect_memory = 0;
+
 				if (!stm_fx) {
 					switch (out.voleffect) {
+					case VOLFX_NONE:
 					case VOLFX_VOLUME:
 						// ok
 						break;
@@ -683,7 +686,7 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 
 			if (smp->filename[0] != '\0')
 				strncpy((char*)stmsmp.name, smp->filename, 12);
-			else if (smp->name[0] != 0x20) {
+			else {
 					for (i = 11; i >= 0; i--)
 						if ((smp->name[i] ? smp->name[i] : 32) != 32)
 							break;
