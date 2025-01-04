@@ -128,10 +128,29 @@ static void load_stm_pattern(song_note_t *note, slurp_t *fp)
 	for (row = 0; row < 64; row++, note += 64 - 4) {
 		for (chan = 0; chan < 4; chan++) {
 			song_note_t* chan_note = note + chan;
-			slurp_read(fp, v, 4);
+			v[0] = slurp_getc(fp);
+
+			switch(v[0])
+			{
+				case 0xfb:
+					break;
+				case 0xfd:
+					chan_note->note = NOTE_CUT;
+				case 0xfc:
+					continue;
+				default:
+					v[1] = slurp_getc(fp);
+					v[2] = slurp_getc(fp);
+					v[3] = slurp_getc(fp);
+					break;
+			}
 
 			// mostly copied from modplug...
-			if (v[0] < 251)
+			if (v[0] == 0xfe)
+				chan_note->note = NOTE_CUT;
+			else if (v[0] == 0xff)
+				chan_note->note = NOTE_NONE;
+			else
 				chan_note->note = (v[0] >> 4) * 12 + (v[0] & 0xf) + 37;
 			chan_note->instrument = v[1] >> 3;
 			if (chan_note->instrument > 31)
@@ -303,7 +322,7 @@ int fmt_stm_load_song(song_t *song, slurp_t *fp, unsigned int lflags)
 		for (n = 1; n <= 31; n++) {
 			song_sample_t *sample = song->samples + n;
 
-			if (sample->length < 3) {
+			if (sample->length < 3 || (((size_t)para_sdata[n] << 4) > slurp_length(fp))) {
 				// Garbage?
 				sample->length = 0;
 			} else {
@@ -519,7 +538,7 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 			warn |= 1 << WARN_PATTERNLEN;
 		}
 		jmax *= MAX_CHANNELS;
-		for (j = joutpos = 0; j < jmax; ++j, ++m) {
+		for (j = 0; j < jmax; ++j, ++m) {
 			if ((j % MAX_CHANNELS) < 4) {
 				int check_effect_memory = 0;
 				song_note_t out = *m;
@@ -646,14 +665,18 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 				if (check_effect_memory && !m->volparam)
 					warn |= (1 << WARN_EFFECTMEMORY);
 
-				stm_pattern[joutpos] = out.note;
-				stm_pattern[joutpos + 1] = (out.instrument << 3) | (stm_vol & 0x07);
-				stm_pattern[joutpos + 2] = ((stm_vol & 0x78) << 1) | (stm_fx & 0x0f);
-				stm_pattern[joutpos + 3] = stm_fx_val;
-				joutpos += 4;
+				if (out.note == 0xfe && !out.instrument && stm_vol >= 65 && !stm_fx)
+					disko_putc(fp, 0xfd);
+				else if (out.note == 0xff && !out.instrument && stm_vol >= 65 && !stm_fx)
+					disko_putc(fp, 0xfc);
+				else {
+					disko_putc(fp, out.note);
+					disko_putc(fp, (out.instrument << 3) | (stm_vol & 0x07));
+					disko_putc(fp, ((stm_vol & 0x78) << 1) | (stm_fx & 0x0f));
+					disko_putc(fp, stm_fx_val);			
+				}
 			}
 		}
-		disko_write(fp, stm_pattern, 1024);
 	}
 
 	// Now writing sample data
@@ -683,7 +706,6 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 			if(smp->vib_depth != 0)
 				warn |= 1 << WARN_SAMPLEVIB;
 
-
 			if (smp->filename[0] != '\0')
 				strncpy((char*)stmsmp.name, smp->filename, 12);
 			else {
@@ -693,8 +715,6 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 					for (; i >= 0; i--)
 						stmsmp.name[i] = smp->name[i] ? smp->name[i] : 255;
 			}
-			else 
-				memset((char*)stmsmp.name, 0, 12);
 
 			stmsmp.length = MIN(0xffff,smp->length);
 			if (smp->flags & CHN_LOOP) {
@@ -708,7 +728,7 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 			stmsmp.loop_start = bswapLE16(stmsmp.loop_start);
 			stmsmp.loop_end = bswapLE16(stmsmp.loop_end);
 			stmsmp.c5speed = bswapLE16(smp->c5speed);
-			stmsmp.volume = (smp->volume + 1) / 4;
+			stmsmp.volume = stmsmp.length == 0 ? 0 : (smp->volume + 1) / 4;
 			stmsmp.pcmpara = bswapLE16(MIN(0xffff, para_sdata[n-1] >> 4));
 		}
 		write_stm_sample(&stmsmp, fp);
