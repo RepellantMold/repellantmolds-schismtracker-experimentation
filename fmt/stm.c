@@ -450,8 +450,7 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 {
 	char stm_songtitle[20];
 	uint8_t stm_orders[128];
-	uint8_t tmp[128];
-	uint8_t stm_pattern[1024];
+	uint8_t tmp[16];
 	uint32_t para_sdata[MAX_SAMPLES];
 	uint8_t speed = song->initial_speed;
 	uint8_t tempo = song->initial_tempo;
@@ -559,12 +558,11 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 					case FX_NONE: stm_fx = stm_fx_val = 0; break;
 					case FX_SPEED:
 						speed = out.param;
-
-						stm_fx = 0x01;
-						stm_fx_val = calculate_tempo_scale(speed, tempo);
 						break;
 					case FX_TEMPO:
 						tempo = out.param;
+						stm_fx = 0x01;
+						stm_fx_val = calculate_tempo_scale(speed, tempo);
 						break;
 					case FX_ARPEGGIO: stm_fx = 0x0a; break;
 					case FX_POSITIONJUMP: stm_fx = 0x02; break;
