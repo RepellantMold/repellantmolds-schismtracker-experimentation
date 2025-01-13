@@ -541,6 +541,7 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 		for (j = 0; j < jmax; ++j, ++m) {
 			if ((j % MAX_CHANNELS) < 4) {
 				int check_effect_memory = 0;
+				int speed_andor_tempo_specified = 0;
 				song_note_t out = *m;
 				uint8_t stm_fx = 0, stm_fx_val = out.param, stm_vol = out.voleffect == VOLFX_VOLUME ? out.volparam : 65;
 				if ((out.note > 0 && out.note <= 12) || (out.note >= 109 && out.note <= 120)) {
@@ -558,13 +559,12 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 				switch(out.effect) {
 					case FX_NONE: stm_fx = stm_fx_val = 0; break;
 					case FX_SPEED:
-						speed = out.param;
-
-						stm_fx = 0x01;
-						stm_fx_val = calculate_tempo_scale(speed, tempo);
+						speed = out.param;	
+						speed_andor_tempo_specified = 1;
 						break;
 					case FX_TEMPO:
 						tempo = out.param;
+						speed_andor_tempo_specified = 1;
 						break;
 					case FX_ARPEGGIO: stm_fx = 0x0a; break;
 					case FX_POSITIONJUMP: stm_fx = 0x02; break;
@@ -664,6 +664,11 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 
 				if (check_effect_memory && !m->volparam)
 					warn |= (1 << WARN_EFFECTMEMORY);
+
+				if (!stm_fx && speed_andor_tempo_specified) {
+					stm_fx = 0x01;
+					stm_fx_val = calculate_tempo_scale(speed, tempo);
+				}
 
 				if (out.note == 0xfe && !out.instrument && stm_vol >= 65 && !stm_fx)
 					disko_putc(fp, 0xfd);
