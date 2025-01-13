@@ -313,8 +313,8 @@ static void parse_options(int argc, char **argv)
 
 static void check_update(void)
 {
-	static schism_ticks_t next = 0;
-	schism_ticks_t now = timer_ticks();
+	static timer_ticks_t next = 0;
+	timer_ticks_t now = timer_ticks();
 
 	/* is there any reason why we'd want to redraw
 	   the screen when it's not even visible? */
@@ -374,7 +374,7 @@ static void key_event_reset(struct key_event *kk, int start_x, int start_y)
 static void event_loop(void)
 {
 	unsigned int lx = 0, ly = 0; /* last x and y position (character) */
-	schism_ticks_t last_mouse_down, ticker;
+	timer_ticks_t last_mouse_down, ticker, last_audio_poll;
 	schism_keysym_t last_key = 0;
 	time_t startdown;
 	int downtrip;
@@ -390,6 +390,7 @@ static void event_loop(void)
 
 	downtrip = 0;
 	last_mouse_down = 0;
+	last_audio_poll = timer_ticks();
 	startdown = 0;
 	status.last_keysym = 0;
 
@@ -792,6 +793,13 @@ static void event_loop(void)
 			}
 			break;
 		};
+
+		// Check for new audio devices every 5 seconds.
+		if (timer_ticks_passed(timer_ticks(), last_audio_poll + 5000)) {
+			refresh_audio_device_list();
+			status.flags |= NEED_UPDATE;
+			last_audio_poll = timer_ticks();
+		}
 
 		if (status.flags & DISKWRITER_ACTIVE) {
 			int q = disko_sync();

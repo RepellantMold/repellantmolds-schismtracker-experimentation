@@ -43,12 +43,12 @@ struct midi_driver {
 };
 
 // implemented in each backend
-struct schism_thread;
+struct mt_thread;
 
 struct midi_provider {
 	char *name;
 	void (*poll)(struct midi_provider *);
-	struct schism_thread *thread;
+	struct mt_thread *thread;
 	volatile int cancelled;
 
 	struct midi_provider *next;
@@ -113,7 +113,6 @@ int midi_engine_port_count(void);
 
 /* midi engines register a provider (one each!) */
 struct midi_provider *midi_provider_register(const char *name, struct midi_driver *f);
-void midi_provider_unregister(struct midi_provider* p);
 
 /* midi engines list ports this way */
 int midi_port_register(struct midi_provider *p,
@@ -121,6 +120,9 @@ int inout, const char *name, void *userdata, int free_userdata);
 
 int midi_port_foreach(struct midi_provider *p, struct midi_port **cursor);
 void midi_port_unregister(int num);
+
+int midi_port_enable(struct midi_port *p);
+int midi_port_disable(struct midi_port *p);
 
 /* only call these if the event isn't really MIDI but you want most of the system
    to act like it is...

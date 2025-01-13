@@ -618,7 +618,7 @@ static int load_xm_instruments(song_t *song, struct xm_file_header *hdr, slurp_t
 			for (n = 0; n < 12; n++) {
 				slurp_read(fp, &w, 2); // tick
 				w = bswapLE16(w);
-				if (n > 0 && w < prevtick & !(w & 0xFF00)) {
+				if (n > 0 && w < prevtick && !(w & 0xFF00)) {
 					// libmikmod code says: "Some broken XM editing program will only save the low byte of the position
 					// value. Try to compensate by adding the missing high byte."
 					// Note: MPT 1.07's XI instrument saver omitted the high byte of envelope nodes.
@@ -681,6 +681,14 @@ static int load_xm_instruments(song_t *song, struct xm_file_header *hdr, slurp_t
 			if (!(ins->flags & ENV_VOLSUSTAIN))
 				ins->vol_env.sustain_start = ins->vol_env.sustain_end = ins->vol_env.nodes - 1;
 			ins->flags |= ENV_VOLLOOP | ENV_VOLSUSTAIN;
+
+			// FT2 loops the first loop found, while IT always does the sustain loop first.
+			// There's not much we can do in this case except for just disabling the sustain
+			// loop :)
+			//
+			// TODO: investigate, see if this breaks anything else
+			if (ins->vol_env.sustain_start > ins->vol_env.loop_start)
+				ins->flags &= ~ENV_VOLSUSTAIN;
 		} else {
 			// fix note-off
 			ins->vol_env.ticks[0] = 0;

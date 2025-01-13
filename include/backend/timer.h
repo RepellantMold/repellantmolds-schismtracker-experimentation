@@ -30,9 +30,13 @@ typedef struct {
 	int (*init)(void);
 	void (*quit)(void);
 
-	schism_ticks_t (*ticks)(void);
-	int (*ticks_passed)(schism_ticks_t a, schism_ticks_t b);
+	timer_ticks_t (*ticks)(void);
+	timer_ticks_t (*ticks_us)(void);
 	void (*usleep)(uint64_t us);
+
+	// returns 1 if a timer was successful
+	// or 0 if we have to emulate it
+	int (*oneshot)(uint32_t ms, void (*callback)(void *param), void *param);
 } schism_timer_backend_t;
 
 #ifdef SCHISM_WIN32

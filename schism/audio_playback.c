@@ -98,6 +98,9 @@ static schism_audio_device_t *current_audio_device = NULL;
 // compiled backends
 static const schism_audio_backend_t *backends[] = {
 	// ordered by preference
+#ifdef SCHISM_MACOSX
+	&schism_audio_backend_macosx,
+#endif
 #ifdef SCHISM_SDL2
 	&schism_audio_backend_sdl2,
 #endif
@@ -283,7 +286,7 @@ static void _audio_create_drivers_list(void)
 	int counts[ARRAY_SIZE(inited_backends)] = {0};
 
 	for (int i = 0; i < ARRAY_SIZE(counts); i++)
-		alloc_size += (counts[i] = inited_backends[i]->driver_count());
+		alloc_size += (counts[i] = (inited_backends[i] ? inited_backends[i]->driver_count() : 0));
 
 	full_drivers.list = mem_alloc(alloc_size * sizeof(const char *));
 

@@ -210,8 +210,6 @@ case $host in
 esac
 AC_SUBST([LIBM])
 
-AC_SUBST([LIBM])
-
 dnl PKG_CHECK_MODULES will abort if pkg-config is not found.
 dnl This is relatively new behavior; what I've decided to do
 dnl is to set PKG_CONFIG to false on failure, warn the user,
@@ -336,8 +334,6 @@ have_loadso=no
 case "${host_os}" in
 	darwin*)
 		AC_MSG_RESULT([found Darwin host])
-
-		AC_SUBST([OSX_LDADD], ["-framework Cocoa -framework CoreAudio -framework CoreMIDI -framework IOKit"])
 
 		use_macosx=yes
 		posix_fseek=yes
@@ -503,7 +499,7 @@ if test "x$use_macosx" = "xyes"; then
 	AC_LANG_POP([Objective C])
 
 	dnl whatever, punt
-	if "x$objc_hax_works" = "xno"; then
+	if test "x$objc_hax_works" = "xno"; then
 		OBJC = "$old_OBJC"
 	fi
 else
@@ -530,17 +526,6 @@ AC_COMPILE_IFELSE([AC_LANG_SOURCE([[int xxx[((-1 >> 1) == -1) ? 1 : -1];]])],
 AC_MSG_RESULT([$have_arithmetic_rshift])
 if test "x$have_arithmetic_rshift" = "xyes"; then
 	AC_DEFINE([HAVE_ARITHMETIC_RSHIFT], [1], [ ])
-fi
-
-# An implementation can technically do whatever it wants here...
-AC_MSG_CHECKING([for sane signed left shift])
-AC_RUN_IFELSE([AC_LANG_PROGRAM([[]], [[return ((-1 << 1) != -2);]])],
-	[have_sane_signed_lshift=yes],
-	[have_sane_signed_lshift=no],
-	[have_sane_signed_lshift=no]) # assume no
-AC_MSG_RESULT([$have_sane_signed_lshift])
-if test "x$have_sane_signed_lshift" = "xyes"; then
-	AC_DEFINE([HAVE_SANE_SIGNED_LSHIFT], [1], [ ])
 fi
 
 dnl --------------------------------------------------------------------------

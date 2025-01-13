@@ -321,16 +321,18 @@ files_macosx = \
 	sys/macosx/midi-macosx.c	\
 	sys/macosx/osdefs.c \
 	sys/macosx/clippy.m \
-	sys/macosx/dmoz.m
+	sys/macosx/dmoz.m \
+	sys/macosx/audio.c
 cflags_macosx=
-libs_macosx=$(OSX_LDADD)
+libs_macosx=
+ldflags_macosx=-framework Cocoa -framework CoreAudio -framework CoreMIDI -framework IOKit -framework AudioUnit
 endif
 
 if USE_MACOS
 files_macos = \
 	sys/macos/osdefs.c sys/macos/dirent/macos-dirent.c sys/macos/threads.c
 cflags_macos=-I$(top_srcdir)/sys/macos/dirent
-libs_macos=-lAppearanceLib -lInputSprocketLib -lControlStripLib -lControlsLib -lCursorDevicesGlue -lMPLibrary -lTextEncodingConverter -lTextCommon -lContextualMenu
+libs_macos=-lAppearanceLib -lInputSprocketLib -lControlStripLib -lControlsLib -lCursorDevicesGlue -lMPLibrary -lTextEncodingConverter -lTextCommon -lContextualMenu -lDrawSprocketLib -lDialogsLib
 
 # Specific to the Retro68 toolchain to create MacBinary files
 schismtracker.bin: schismtracker.pef $(top_srcdir)/sys/macos/resource.r
@@ -338,9 +340,9 @@ schismtracker.pef: schismtracker.xcoff
 
 ## use today's date if we didn't get a commit date from git
 if HAVE_GIT
-rezflags_version = -DVERSION=\"`echo $(PACKAGE_VERSION)`\" -DVERSION_YEAR=`echo '$(PACKAGE_VERSION)' | cut -c1-4` -DVERSION_MONTH=`echo '$(PACKAGE_VERSION)' | cut -c5-6` -DVERSION_DAY=`echo '$(PACKAGE_VERSION)' | cut -c7-8`
+rezflags_version = -DVERSION=\"`echo $(PACKAGE_VERSION)`\" -DVERSION_YEAR=`echo '$(PACKAGE_VERSION)' | cut -c1-4 | sed 's/^0*\([1-9]\)/\1/;s/^0*$$/0/'` -DVERSION_MONTH=`echo '$(PACKAGE_VERSION)' | cut -c5-6 | sed 's/^0*\([1-9]\)/\1/;s/^0*$$/0/'` -DVERSION_DAY=`echo '$(PACKAGE_VERSION)' | cut -c7-8 | sed 's/^0*\([1-9]\)/\1/;s/^0*$$/0/'`
 else
-rezflags_version = -DVERSION=\"`date +%Y%m%d`\" -DVERSION_YEAR=`date +%Y` -DVERSION_MONTH=`date +%m` -DVERSION_DAY=`date +%d`
+rezflags_version = -DVERSION=\"`date +%Y%m%d`\" -DVERSION_YEAR=`date +%Y | sed 's/^0*\([1-9]\)/\1/;s/^0*$$/0/'` -DVERSION_MONTH=`date +%m | sed 's/^0*\([1-9]\)/\1/;s/^0*$$/0/'` -DVERSION_DAY=`date +%d | sed 's/^0*\([1-9]\)/\1/;s/^0*$$/0/'`
 endif # HAVE_GIT
 
 .pef.bin:
@@ -563,3 +565,4 @@ schismtracker_OBJCFLAGS = $(AM_OBJCFLAGS) $(component_cflags)
 
 schismtracker_DEPENDENCIES = $(files_windres)
 schismtracker_LDADD = $(LIBM) $(libs_x11) $(libs_wii) $(libs_wiiu) $(libs_jack) $(libs_macosx) $(lib_asound) $(lib_win32) $(libs_network) $(libs_flac) $(lib_mediafoundation) $(UTF8PROC_LIBS) $(libs_sdl2) $(libs_sdl12) $(libs_macos)
+schismtracker_LDFLAGS = $(ldflags_macosx)
