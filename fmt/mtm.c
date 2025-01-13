@@ -796,7 +796,7 @@ int fmt_mtm_save_song(disko_t *fp, song_t *song)
 
 		if (ss->flags & CHN_LOOP) {
 			smp.loop_start = bswapLE32(ss->loop_start * multiply);
-			smp.loop_end = bswapLE32(ss->loop_end * multiply)+1;
+			smp.loop_end = bswapLE32(ss->loop_end * multiply);
 		} else {
 			smp.loop_start = smp.loop_end = 0;
 		}
