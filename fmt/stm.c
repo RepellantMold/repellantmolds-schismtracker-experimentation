@@ -666,7 +666,12 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 					stm_fx = 0x01;
 					stm_fx_val = calculate_tempo_scale(speed, tempo);
 				}
-
+#if 1
+				disko_putc(fp, out.note);
+				disko_putc(fp, (out.instrument << 3) | (stm_vol & 0x07));
+				disko_putc(fp, ((stm_vol & 0x78) << 1) | (stm_fx & 0x0f));
+				disko_putc(fp, stm_fx_val);		
+#else
 				if (out.note == 0xfe && !out.instrument && stm_vol >= 65 && !stm_fx)
 					disko_putc(fp, 0xfd);
 				else if (out.note == 0xff && !out.instrument && stm_vol >= 65 && !stm_fx)
@@ -677,6 +682,7 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 					disko_putc(fp, ((stm_vol & 0x78) << 1) | (stm_fx & 0x0f));
 					disko_putc(fp, stm_fx_val);			
 				}
+#endif
 			}
 		}
 	}
