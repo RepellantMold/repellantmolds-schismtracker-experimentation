@@ -451,7 +451,6 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 	char stm_songtitle[20];
 	uint8_t stm_orders[128];
 	uint8_t tmp[128];
-	uint8_t stm_pattern[1024];
 	uint32_t para_sdata[MAX_SAMPLES];
 	uint8_t speed = song->initial_speed;
 	uint8_t tempo = song->initial_tempo;
@@ -523,14 +522,8 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 
 	for(n = 0; n < npat; ++n) {
 		song_note_t *m = song->patterns[n];
-		if (m == NULL) continue;
-		for(i = 0; i < 1024; ++i) {
-			stm_pattern[(i / (64 / 4)) * ((i / 4) % 4)] = 0xFF;
-			stm_pattern[((i / (64 / 4)) * ((i / 4) % 4)) + 1] = 0x01;
-			stm_pattern[((i / (64 / 4)) * ((i / 4) % 4)) + 2] = 0x80;
-			stm_pattern[((i / (64 / 4)) * ((i / 4) % 4)) + 3] = 0x00;
-		}
-			
+		uint8_t saved_param[4] = {0};
+		if (m == NULL) continue;	
 		jmax = song->pattern_size[n];
 		if(jmax != 64) {
 			if(jmax > 64)
@@ -544,6 +537,10 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 				int speed_andor_tempo_specified = 0;
 				song_note_t out = *m;
 				uint8_t stm_fx = 0, stm_fx_val = out.param, stm_vol = out.voleffect == VOLFX_VOLUME ? out.volparam : 65;
+
+				if (out.param)
+					saved_param[j % MAX_CHANNELS] = m->param;
+
 				if ((out.note > 0 && out.note <= 12) || (out.note >= 109 && out.note <= 120)) {
 					warn |= 1 << WARN_NOTERANGE;
 					out.note = 255;
@@ -620,7 +617,7 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 				}
 
 				if (check_effect_memory && !out.param)
-					warn |= (1 << WARN_EFFECTMEMORY);
+					stm_fx_val = saved_param[j % MAX_CHANNELS];
 
 				check_effect_memory = 0;
 
@@ -663,7 +660,7 @@ int fmt_stm_save_song(disko_t *fp, song_t *song)
 				}
 
 				if (check_effect_memory && !m->volparam)
-					warn |= (1 << WARN_EFFECTMEMORY);
+					stm_fx_val = saved_param[j % MAX_CHANNELS];
 
 				if (!stm_fx && speed_andor_tempo_specified) {
 					stm_fx = 0x01;
