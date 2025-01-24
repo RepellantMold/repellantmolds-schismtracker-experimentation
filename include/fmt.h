@@ -224,6 +224,7 @@ void read_lined_message(char *msg, slurp_t *fp, int len, int linelen);
 uint8_t convert_stm_tempo_to_bpm(size_t tempo);
 void handle_stm_tempo_pattern(song_note_t *note, size_t tempo);
 void handle_stm_effects(song_note_t *chan_note);
+extern const uint8_t st2_tempo_table[15][16];
 extern const uint8_t stm_effects[16];
 
 /* used internally by slurp only. nothing else should need this */
