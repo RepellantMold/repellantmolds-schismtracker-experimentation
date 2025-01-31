@@ -140,6 +140,7 @@ enum {
 	SF_FONTEDIT = 4,
 	SF_CLASSIC = 8,
 	SF_NETWORK = 16,
+	SF_HEADLESS = 32,
 };
 static int startup_flags = SF_HOOKS | SF_NETWORK;
 
@@ -168,6 +169,7 @@ enum {
 	O_DISKWRITE,
 	O_DEBUG,
 	O_VERSION,
+	O_HEADLESS,
 };
 
 #define USAGE "Usage: %s [OPTIONS] [DIRECTORY] [FILE]\n"
@@ -197,6 +199,7 @@ static void parse_options(int argc, char **argv)
 		{"hooks", 0, NULL, O_HOOKS},
 		{"no-hooks", 0, NULL, O_NO_HOOKS},
 #endif
+		{"headless", 0, NULL, O_HEADLESS},
 		{"version", 0, NULL, O_VERSION},
 		{"help", 0, NULL, O_HELP},
 		{NULL, 0, NULL, 0},
@@ -256,6 +259,9 @@ static void parse_options(int argc, char **argv)
 			startup_flags &= ~SF_HOOKS;
 			break;
 #endif
+		case O_HEADLESS:
+			startup_flags |= SF_HEADLESS;
+			break;
 		case O_VERSION:
 			puts(schism_banner(0));
 			puts(ver_short_copyright);
@@ -274,6 +280,7 @@ static void parse_options(int argc, char **argv)
 #if ENABLE_HOOKS
 				"      --hooks (--no-hooks)\n"
 #endif
+				"      --headless\n"
 				"      --version\n"
 				"  -h, --help\n"
 			);
@@ -958,6 +965,49 @@ int schism_main(int argc, char** argv)
 	shutdown_process |= EXIT_SAVECFG;
 	shutdown_process |= EXIT_SDLQUIT;
 
+	if ((startup_flags & SF_HEADLESS)) {
+		if (!diskwrite_to) {
+			fprintf(stderr, "Error: --headless requires --diskwrite\n");
+			return 1;
+		}
+		if (!initial_song) {
+			fprintf(stderr, "Error: --headless requires an input song file\n");
+			return 1;
+		}
+
+		// Initialize minimal systems
+		// We need to call video_startup() because it sets up the timer and event
+		// system that is needed for exporting a song
+		video_startup();
+		audio_init(audio_driver, audio_device);
+		song_init_modplug();
+
+		// Load and export song
+		if (song_load_unchecked(initial_song)) {
+			const char *multi = strcasestr(diskwrite_to, "%c");
+			const char *driver = (strcasestr(diskwrite_to, ".aif")
+					  ? (multi ? "MAIFF" : "AIFF")
+					  : (multi ? "MWAV" : "WAV"));
+			if (song_export(diskwrite_to, driver) != SAVE_SUCCESS) {
+				schism_exit(1);
+			}
+
+			// Wait for diskwrite to complete
+			while (status.flags & DISKWRITER_ACTIVE) {
+				int q = disko_sync();
+				if (q == DW_SYNC_DONE) {
+					break;
+				} else if (q != DW_SYNC_MORE) {
+					fprintf(stderr, "Error: Diskwrite failed\n");
+					schism_exit(1);
+				}
+			}
+			schism_exit(0);
+		}
+		fprintf(stderr, "Error: Failed to load song %s\n", initial_song);
+		schism_exit(1);
+	}
+
 	video_startup();
 	if (want_fullscreen >= 0)
 		video_fullscreen(want_fullscreen);
@@ -1038,92 +1088,7 @@ int schism_main(int argc, char** argv)
 	return 0; /* blah */
 }
 
-#if defined(SCHISM_WIN32)
-# include "loadso.h"
-# include <windows.h>
-
-static char **utf8_argv = NULL;
-static int utf8_argc = 0;
-
-void win32_atexit(void)
-{
-	for (int i = 0; i < utf8_argc; i++)
-		free(utf8_argv[i]);
-
-	free(utf8_argv);
-}
-
-int main(int argc, char **argv)
-{
-	int i;
-
-	// We only want to get the Unicode arguments if we are able to
-	LPWSTR *(WINAPI *WIN32_CommandLineToArgvW)(LPCWSTR lpCmdLine,int *pNumArgs);
-	LPWSTR (WINAPI *WIN32_GetCommandLineW)(void);
-
-	void *lib_kernel32 = loadso_object_load("KERNEL32.DLL");
-	void *lib_shell32 = loadso_object_load("SHELL32.DLL");
-
-	if (lib_kernel32 && lib_shell32) {
-		WIN32_CommandLineToArgvW = loadso_function_load(lib_shell32, "CommandLineToArgvW");
-		WIN32_GetCommandLineW = loadso_function_load(lib_kernel32, "GetCommandLineW");
-
-		if (WIN32_CommandLineToArgvW && WIN32_GetCommandLineW) {
-			int argcw;
-			LPWSTR *argvw = CommandLineToArgvW(WIN32_GetCommandLineW(), &argcw);
-
-			utf8_argc = argcw;
-
-			if (argvw) {
-				// now we have Unicode arguments!...
-
-				utf8_argv = mem_alloc(sizeof(char *) * utf8_argc);
-
-				for (i = 0; i < argcw; i++) {
-					charset_iconv(argvw[i], &utf8_argv[i], CHARSET_WCHAR_T, CHARSET_CHAR, SIZE_MAX);
-					if (!utf8_argv[i])
-						utf8_argv[i] = str_dup(""); // ...
-				}
-
-				LocalFree(argvw);
-
-				goto have_utf8_args;
-			}
-		}
-	}
-
-	// fallback, ANSI
-	utf8_argc = argc;
-	utf8_argv = mem_alloc(sizeof(char *) * utf8_argc);
-
-	for (i = 0; i < argc; i++) {
-		charset_iconv(argv[i], &utf8_argv[i], CHARSET_ANSI, CHARSET_CHAR, SIZE_MAX);
-		if (!utf8_argv[i])
-			utf8_argv[i] = str_dup(""); // ...
-	}
-
-have_utf8_args: ;
-	if (lib_kernel32)
-		loadso_object_unload(lib_kernel32);
-
-	if (lib_shell32)
-		loadso_object_unload(lib_shell32);
-
-	// copy so our arguments don't get warped by main
-	char *utf8_argv_cp[utf8_argc];
-
-	for (i = 0; i < utf8_argc; i++)
-		utf8_argv_cp[i] = utf8_argv[i];
-
-	// make sure our arguments actually get free'd
-	atexit(win32_atexit);
-
-	schism_main(argc, utf8_argv_cp);
-
-	// never happens; we use exit()
-	return 0;
-}
-#elif defined(SCHISM_MACOSX)
+#if defined(SCHISM_MACOSX)
 // sys/macosx/macosx-sdlmain.m
 #else
 int main(int argc, char **argv)

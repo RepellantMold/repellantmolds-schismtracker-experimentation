@@ -104,6 +104,17 @@ A return value of 0 indicates that the event should NOT be processed by the main
 # define os_show_message_box(title, text) ((void)printf("%s: %s\n", title, text))
 #endif
 
+/* Whether or not to compile ANSI variants of functions; we only actually do
+ * this on IA-32 because of Win9x, all other architectures are WinNT-only.
+ *
+ * Note: mingw-w64 doesn't support anything below XP. Maybe we should disable
+ * ANSI there as well? */
+#ifdef SCHISM_WIN32
+# if defined(_M_IX86) || defined(__i386__) || defined(__i386) || defined(i386)
+#  define SCHISM_WIN32_COMPILE_ANSI 1
+# endif
+#endif
+
 // Implementations for the above, and more.
 
 int macosx_ibook_fnswitch(int setting);
@@ -128,6 +139,8 @@ FILE* win32_fopen(const char* path, const char* flags);
 int win32_run_hook(const char *dir, const char *name, const char *maybe_arg);
 int win32_get_key_repeat(int *pdelay, int *prate);
 void win32_show_message_box(const char *title, const char *text);
+int win32_audio_lookup_device_name(const void *nameguid, char **result);
+int win32_ntver_atleast(int major, int minor, int build);
 
 int posix_run_hook(const char *dir, const char *name, const char *maybe_arg);
 

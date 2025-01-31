@@ -22,15 +22,14 @@
  */
 
 // Win32 Waveout audio backend - written because SDL 1.2 kind of sucks, and
-// this driver is especially terrible there. If it's wanted I can write
-// a directsound backend but tbh I don't care for the few systems that
-// actually need it. (namely, probably win2000 and maybe winme.)
+// this driver is especially terrible there.
 //  - paper
 
 #include "headers.h"
 #include "charset.h"
 #include "threads.h"
 #include "mem.h"
+#include "osdefs.h"
 #include "backend/audio.h"
 
 #include <windows.h>
@@ -85,12 +84,12 @@ static const char *drivers[] = {
 	"waveout",
 };
 
-static int win32_audio_driver_count()
+static int waveout_audio_driver_count()
 {
 	return ARRAY_SIZE(drivers);
 }
 
-static const char *win32_audio_driver_name(int i)
+static const char *waveout_audio_driver_name(int i)
 {
 	if (i >= ARRAY_SIZE(drivers) || i < 0)
 		return NULL;
@@ -100,77 +99,14 @@ static const char *win32_audio_driver_name(int i)
 
 /* ------------------------------------------------------------------------ */
 
-// devices name cache; refreshed after every call to win32_audio_device_count
+// devices name cache; refreshed after every call to waveout_audio_device_count
 static struct {
 	uint32_t id;
 	char *name;
 } *devices = NULL;
 static size_t devices_size = 0;
 
-// By default, waveout devices are limited to 31 chars, which means we get
-// lovely device names like
-//  > Headphones (USB-C to 3.5mm Head
-// Doing this gives us access to longer and more "general" devices names,
-// such as
-//  > G432 Gaming Headset
-// but only if the device supports it!
-static int _win32_audio_lookup_device_name(const GUID *nameguid, char **result)
-{
-	// format for printing GUIDs with printf
-#define GUIDF "%08" PRIx32 "-%04" PRIx16 "-%04" PRIx16 "-%02" PRIx8 "%02" PRIx8 "-%02" PRIx8 "%02" PRIx8 "%02" PRIx8 "%02" PRIx8 "%02" PRIx8 "%02" PRIx8
-#define GUIDX(x) (x).Data1, (x).Data2, (x).Data3, (x).Data4[0], (x).Data4[1], (x).Data4[2], (x).Data4[3], (x).Data4[4], (x).Data4[5], (x).Data4[6], (x).Data4[7]
-	// Set this to NULL before doing anything
-	*result = NULL;
-
-	WCHAR *strw = NULL;
-	DWORD len = 0;
-
-	static const GUID nullguid = {0};
-	if (!memcmp(nameguid, &nullguid, sizeof(nullguid)))
-		return 0;
-
-	{
-		HKEY hkey;
-		DWORD type;
-
-		WCHAR keystr[256] = {0};
-		_snwprintf(keystr, ARRAY_SIZE(keystr) - 1, L"System\\CurrentControlSet\\Control\\MediaCategories\\{" GUIDF "}", GUIDX(*nameguid));
-
-		if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keystr, 0, KEY_QUERY_VALUE, &hkey) != ERROR_SUCCESS)
-			return 0;
-
-		if (RegQueryValueExW(hkey, L"Name", NULL, &type, NULL, &len) != ERROR_SUCCESS || type != REG_SZ) {
-			RegCloseKey(hkey);
-			return 0;
-		}
-
-		strw = mem_alloc(len + sizeof(WCHAR));
-
-		if (RegQueryValueExW(hkey, L"Name", NULL, NULL, (LPBYTE)strw, &len) != ERROR_SUCCESS) {
-			RegCloseKey(hkey);
-			free(strw);
-			return 0;
-		}
-
-		RegCloseKey(hkey);
-	}
-
-	// force NUL terminate
-	strw[len >> 1] = L'\0';
-
-	if (charset_iconv(strw, result, CHARSET_WCHAR_T, CHARSET_UTF8, len + sizeof(WCHAR))) {
-		free(strw);
-		return 0;
-	}
-
-	free(strw);
-	return 1;
-
-#undef GUIDF
-#undef GUIDX
-}
-
-static uint32_t win32_audio_device_count(void)
+static uint32_t waveout_audio_device_count(void)
 {
 	const UINT devs = waveOutGetNumDevs();
 
@@ -186,10 +122,14 @@ static uint32_t win32_audio_device_count(void)
 	UINT i;
 	for (i = 0; i < devs; i++) {
 		union {
+#ifdef SCHISM_WIN32_COMPILE_ANSI
 			WAVEOUTCAPSA a;
+#endif
 			WAVEOUTCAPSW w;
 			struct waveoutcaps2w w2;
 		} caps = {0};
+
+#ifdef SCHISM_WIN32_COMPILE_ANSI
 		int win9x = (GetVersion() & UINT32_C(0x80000000));
 		if (win9x) {
 			if (waveOutGetDevCapsA(i, &caps.a, sizeof(caps.a)) != MMSYSERR_NOERROR)
@@ -197,11 +137,13 @@ static uint32_t win32_audio_device_count(void)
 
 			if (charset_iconv(caps.a.szPname, &devices[devices_size], CHARSET_ANSI, CHARSET_UTF8, sizeof(caps.a.szPname)))
 				continue;
-		} else {
+		} else
+#endif
+		{
 			// Try WAVEOUTCAPS2 before WAVEOUTCAPS
 			if (waveOutGetDevCapsW(i, (LPWAVEOUTCAPSW)&caps.w2, sizeof(caps.w2)) == MMSYSERR_NOERROR) {
 				// Try receiving based on the name GUID. Otherwise, fall back to the short name.
-				if (!_win32_audio_lookup_device_name(&caps.w2.NameGuid, &devices[devices_size].name)
+				if (!win32_audio_lookup_device_name(&caps.w2.NameGuid, &devices[devices_size].name)
 					&& charset_iconv(caps.w2.szPname, &devices[devices_size].name, CHARSET_WCHAR_T, CHARSET_UTF8, sizeof(caps.w2.szPname)))
 					continue;
 			} else if (waveOutGetDevCapsW(i, &caps.w, sizeof(caps.w)) == MMSYSERR_NOERROR) {
@@ -220,7 +162,7 @@ static uint32_t win32_audio_device_count(void)
 	return devs;
 }
 
-static const char *win32_audio_device_name(uint32_t i)
+static const char *waveout_audio_device_name(uint32_t i)
 {
 	// If this ever happens it is a catastrophic bug and we
 	// should crash before anything bad happens.
@@ -232,7 +174,7 @@ static const char *win32_audio_device_name(uint32_t i)
 
 /* ---------------------------------------------------------- */
 
-static int win32_audio_init_driver(const char *driver)
+static int waveout_audio_init_driver(const char *driver)
 {
 	int fnd = 0;
 	for (int i = 0; i < ARRAY_SIZE(drivers); i++) {
@@ -245,11 +187,11 @@ static int win32_audio_init_driver(const char *driver)
 		return -1;
 
 	// Get the devices
-	(void)win32_audio_device_count();
+	(void)waveout_audio_device_count();
 	return 0;
 }
 
-static void win32_audio_quit_driver(void)
+static void waveout_audio_quit_driver(void)
 {
 	// Free the devices
 	if (devices) {
@@ -263,9 +205,11 @@ static void win32_audio_quit_driver(void)
 
 /* -------------------------------------------------------- */
 
-static int win32_audio_thread(void *data)
+static int waveout_audio_thread(void *data)
 {
 	schism_audio_device_t *dev = data;
+
+	SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
 	while (!dev->cancelled) {
 		// FIXME add a timeout here
@@ -287,7 +231,7 @@ static int win32_audio_thread(void *data)
 	return 0;
 }
 
-static void CALLBACK win32_audio_callback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance, DWORD dwParam1, DWORD dwParam2)
+static void CALLBACK waveout_audio_callback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance, DWORD dwParam1, DWORD dwParam2)
 {
 	schism_audio_device_t *dev = (schism_audio_device_t *)dwInstance;
 
@@ -301,7 +245,7 @@ static void CALLBACK win32_audio_callback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwI
 }
 
 // nonzero on success
-static schism_audio_device_t *win32_audio_open_device(uint32_t id, const schism_audio_spec_t *desired, schism_audio_spec_t *obtained)
+static schism_audio_device_t *waveout_audio_open_device(uint32_t id, const schism_audio_spec_t *desired, schism_audio_spec_t *obtained)
 {
 	// Default to some device that can handle our output
 	UINT device_id = (id == AUDIO_BACKEND_DEFAULT || id < devices_size) ? (WAVE_MAPPER) : devices[id].id;
@@ -321,16 +265,17 @@ static schism_audio_device_t *win32_audio_open_device(uint32_t id, const schism_
 	case 32: format.wBitsPerSample = 32; break;
 	}
 
-	format.nBlockAlign = format.nChannels * (format.wBitsPerSample / 8);
-	format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
-
 	// ok, now we can allocate the device
 	schism_audio_device_t *dev = mem_calloc(1, sizeof(*dev));
 
 	dev->callback = desired->callback;
 
 	for (;;) {
-		MMRESULT err = waveOutOpen(&dev->hwaveout, device_id, &format, (UINT_PTR)win32_audio_callback, (UINT_PTR)dev, CALLBACK_FUNCTION | WAVE_ALLOWSYNC);
+		// Recalculate format
+		format.nBlockAlign = format.nChannels * (format.wBitsPerSample / 8);
+		format.nAvgBytesPerSec = format.nSamplesPerSec * format.nBlockAlign;
+
+		MMRESULT err = waveOutOpen(&dev->hwaveout, device_id, &format, (UINT_PTR)waveout_audio_callback, (UINT_PTR)dev, CALLBACK_FUNCTION | WAVE_ALLOWSYNC);
 		if (err == MMSYSERR_NOERROR) {
 			// We're done here
 			break;
@@ -365,7 +310,7 @@ static schism_audio_device_t *win32_audio_open_device(uint32_t id, const schism_
 	}
 
 	// allocate the buffer
-	DWORD buflen = desired->samples * desired->channels * (desired->bits / 8);
+	DWORD buflen = desired->samples * format.nChannels * (format.wBitsPerSample / 8);
 	dev->buffer = mem_alloc(buflen * NUM_BUFFERS);
 
 	// fill in the wavehdrs
@@ -384,7 +329,7 @@ static schism_audio_device_t *win32_audio_open_device(uint32_t id, const schism_
 	}
 
 	// ok, now start the full thread
-	dev->thread = mt_thread_create(win32_audio_thread, "WinMM audio thread", dev);
+	dev->thread = mt_thread_create(waveout_audio_thread, "WinMM audio thread", dev);
 	if (!dev->thread) {
 		waveOutClose(dev->hwaveout);
 		CloseHandle(dev->sem);
@@ -401,7 +346,7 @@ static schism_audio_device_t *win32_audio_open_device(uint32_t id, const schism_
 	return dev;
 }
 
-static void win32_audio_close_device(schism_audio_device_t *dev)
+static void waveout_audio_close_device(schism_audio_device_t *dev)
 {
 	if (!dev)
 		return;
@@ -428,7 +373,7 @@ static void win32_audio_close_device(schism_audio_device_t *dev)
 	free(dev);
 }
 
-static void win32_audio_lock_device(schism_audio_device_t *dev)
+static void waveout_audio_lock_device(schism_audio_device_t *dev)
 {
 	if (!dev)
 		return;
@@ -436,7 +381,7 @@ static void win32_audio_lock_device(schism_audio_device_t *dev)
 	mt_mutex_lock(dev->mutex);
 }
 
-static void win32_audio_unlock_device(schism_audio_device_t *dev)
+static void waveout_audio_unlock_device(schism_audio_device_t *dev)
 {
 	if (!dev)
 		return;
@@ -444,7 +389,7 @@ static void win32_audio_unlock_device(schism_audio_device_t *dev)
 	mt_mutex_unlock(dev->mutex);
 }
 
-static void win32_audio_pause_device(schism_audio_device_t *dev, int paused)
+static void waveout_audio_pause_device(schism_audio_device_t *dev, int paused)
 {
 	if (!dev)
 		return;
@@ -461,34 +406,34 @@ static void win32_audio_pause_device(schism_audio_device_t *dev, int paused)
 //////////////////////////////////////////////////////////////////////////////
 // dynamic loading
 
-static int win32_audio_init(void)
+static int waveout_audio_init(void)
 {
 	return 1;
 }
 
-static void win32_audio_quit(void)
+static void waveout_audio_quit(void)
 {
 	// dont do anything
 }
 
 //////////////////////////////////////////////////////////////////////////////
 
-const schism_audio_backend_t schism_audio_backend_win32 = {
-	.init = win32_audio_init,
-	.quit = win32_audio_quit,
+const schism_audio_backend_t schism_audio_backend_waveout = {
+	.init = waveout_audio_init,
+	.quit = waveout_audio_quit,
 
-	.driver_count = win32_audio_driver_count,
-	.driver_name = win32_audio_driver_name,
+	.driver_count = waveout_audio_driver_count,
+	.driver_name = waveout_audio_driver_name,
 
-	.device_count = win32_audio_device_count,
-	.device_name = win32_audio_device_name,
+	.device_count = waveout_audio_device_count,
+	.device_name = waveout_audio_device_name,
 
-	.init_driver = win32_audio_init_driver,
-	.quit_driver = win32_audio_quit_driver,
+	.init_driver = waveout_audio_init_driver,
+	.quit_driver = waveout_audio_quit_driver,
 
-	.open_device = win32_audio_open_device,
-	.close_device = win32_audio_close_device,
-	.lock_device = win32_audio_lock_device,
-	.unlock_device = win32_audio_unlock_device,
-	.pause_device = win32_audio_pause_device,
+	.open_device = waveout_audio_open_device,
+	.close_device = waveout_audio_close_device,
+	.lock_device = waveout_audio_lock_device,
+	.unlock_device = waveout_audio_unlock_device,
+	.pause_device = waveout_audio_pause_device,
 };

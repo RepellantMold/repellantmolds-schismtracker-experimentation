@@ -116,6 +116,15 @@ static uint32_t find_volume(uint16_t vol)
 
 static inline void rn_tremor(song_voice_t *chan, int32_t *vol)
 {
+	if ((chan->cd_tremor & 128) && chan->length) {
+		if (chan->cd_tremor == 128)
+			chan->cd_tremor = (chan->mem_tremor >> 4) | 192;
+		else if (chan->cd_tremor == 192)
+			chan->cd_tremor = (chan->mem_tremor & 0xf) | 128;
+		else
+			chan->cd_tremor--;
+	}
+
 	if ((chan->cd_tremor & 192) == 128)
 		*vol = 0;
 
@@ -151,7 +160,7 @@ static inline int32_t rn_vibrato(song_t *csf, song_voice_t *chan, int32_t freque
 	} else {
 		vdepth = 6;
 	}
-	vdelta = (vdelta * (int)chan->vibrato_depth) >> vdepth;
+	vdelta = (vdelta * (int32_t)chan->vibrato_depth) >> vdepth;
 
 	frequency = csf_fx_do_freq_slide(csf->flags, frequency, vdelta, 0);
 
@@ -184,7 +193,7 @@ static inline int32_t rn_sample_vibrato(song_t *csf, song_voice_t *chan, int32_t
 		adepth += pins->vib_rate & 0xff; // (2 & 3)
 		/* need this cast -- if adepth is unsigned, large autovib will crash the mixer (why? I don't know!)
 		but if vib_depth is changed to signed, that screws up other parts of the code. ugh. */
-		adepth = MIN(adepth, (int) (pins->vib_depth << 8));
+		adepth = MIN(adepth, (int32_t)(pins->vib_depth << 8));
 		chan->autovib_depth = adepth; // (5)
 		adepth >>= 8; // (4)
 
@@ -264,7 +273,7 @@ static inline void rn_process_vol_env(song_voice_t* chan, int32_t *nvol) {
 			envpos = x2;
 
 		if (x2 > x1 && envpos > x1) {
-			envvol += ((envpos - x1) * (((int32_t)penv->vol_env.values[pt]<<2) - envvol)) / (x2 - x1);
+			envvol += ((envpos - x1) * (((int32_t)(penv->vol_env.values[pt] << 2)) - envvol)) / (x2 - x1);
 		}
 
 		envvol = CLAMP(envvol, 0, 256);
@@ -338,7 +347,7 @@ static inline void rn_process_ins_fade(song_voice_t *chan, int32_t *nvol) {
 			if (chan->fadeout_volume <= 0)
 				chan->fadeout_volume = 0;
 
-			vol = (vol * chan->fadeout_volume) >> 16;
+			vol = rshift_signed(vol * chan->fadeout_volume, 16);
 		} else if (!chan->fadeout_volume) {
 			vol = 0;
 		}
@@ -359,6 +368,26 @@ static inline void rn_process_envelope(song_voice_t *chan, int32_t *nvol)
 	rn_process_ins_fade(chan, nvol);
 }
 
+static inline void rn_process_midi_macro(song_t *csf, song_voice_t *chan)
+{
+	/* this is wrong; see OpenMPT's soundlib/Snd_fx.cpp:
+	 *
+	 *     This is "almost" how IT does it - apparently, IT seems to lag one row
+	 *     behind on global volume or channel volume changes.
+	 *
+	 * OpenMPT also doesn't entirely support IT's version of this macro, which is
+	 * just another demotivator for actually implementing it correctly *sigh* */
+
+	if (chan->row_effect == FX_MIDI && (csf->flags & SONG_FIRSTTICK)) {
+		const uint32_t vel = chan->ptr_sample ?
+			_muldiv((chan->volume + chan->vol_swing) * csf->current_global_volume, chan->global_volume * chan->instrument_volume, INT32_C(1) << 20)
+			: 0;
+
+		csf_process_midi_macro(csf, chan - csf->voices,
+			(chan->row_param < 0x80) ? csf->midi_config.sfx[chan->active_macro] : csf->midi_config.zxx[chan->row_param & 0x7F],
+			chan->row_param, chan->note, vel, 0);
+	}
+}
 
 static inline int32_t rn_arpeggio(song_t *csf, song_voice_t *chan, int32_t frequency)
 {
@@ -559,13 +588,13 @@ static inline int32_t rn_update_sample(song_t *csf, song_voice_t *chan, int32_t 
 	if (chan->flags & CHN_MUTE) {
 		chan->left_volume = chan->right_volume = 0;
 	} else if (!(csf->mix_flags & SNDMIX_NORAMPING) &&
-	    chan->flags & CHN_VOLUMERAMP &&
+	    (chan->flags & CHN_VOLUMERAMP) &&
 	    (chan->right_volume != chan->right_volume_new ||
 	     chan->left_volume  != chan->left_volume_new)) {
 		// Setting up volume ramp
 		int32_t ramp_length = volume_ramp_samples;
-		int32_t right_delta = ((chan->right_volume_new - chan->right_volume) << VOLUMERAMPPRECISION);
-		int32_t left_delta  = ((chan->left_volume_new  - chan->left_volume)  << VOLUMERAMPPRECISION);
+		int32_t right_delta = lshift_signed(chan->right_volume_new - chan->right_volume, VOLUMERAMPPRECISION);
+		int32_t left_delta  = lshift_signed(chan->left_volume_new  - chan->left_volume,  VOLUMERAMPPRECISION);
 
 		if (csf->mix_flags & SNDMIX_HQRESAMPLER) {
 			if (chan->right_volume | chan->left_volume &&
@@ -573,8 +602,8 @@ static inline int32_t rn_update_sample(song_t *csf, song_voice_t *chan, int32_t 
 			    !(chan->flags & CHN_FASTVOLRAMP)) {
 				ramp_length = csf->buffer_count;
 
-				int32_t l = (1 << (VOLUMERAMPPRECISION - 1));
-				int32_t r =(int32_t) volume_ramp_samples;
+				int32_t l = lshift_signed(INT32_C(1), VOLUMERAMPPRECISION - 1);
+				int32_t r = (int32_t)volume_ramp_samples;
 
 				ramp_length = CLAMP(ramp_length, l, r);
 			}
@@ -582,8 +611,8 @@ static inline int32_t rn_update_sample(song_t *csf, song_voice_t *chan, int32_t 
 
 		chan->right_ramp = right_delta / ramp_length;
 		chan->left_ramp = left_delta / ramp_length;
-		chan->right_volume = chan->right_volume_new - ((chan->right_ramp * ramp_length) >> VOLUMERAMPPRECISION);
-		chan->left_volume = chan->left_volume_new - ((chan->left_ramp * ramp_length) >> VOLUMERAMPPRECISION);
+		chan->right_volume = chan->right_volume_new - rshift_signed(chan->right_ramp * ramp_length, VOLUMERAMPPRECISION);
+		chan->left_volume = chan->left_volume_new - rshift_signed(chan->left_ramp * ramp_length, VOLUMERAMPPRECISION);
 
 		if (chan->right_ramp | chan->left_ramp) {
 			chan->ramp_length = ramp_length;
@@ -598,8 +627,8 @@ static inline int32_t rn_update_sample(song_t *csf, song_voice_t *chan, int32_t 
 		chan->left_volume  = chan->left_volume_new;
 	}
 
-	chan->right_ramp_volume = chan->right_volume << VOLUMERAMPPRECISION;
-	chan->left_ramp_volume = chan->left_volume << VOLUMERAMPPRECISION;
+	chan->right_ramp_volume = lshift_signed(chan->right_volume, VOLUMERAMPPRECISION);
+	chan->left_ramp_volume = lshift_signed(chan->left_volume, VOLUMERAMPPRECISION);
 
 	// Adding the channel in the channel list
 	csf->voice_mix[csf->num_voices++] = nchan;
@@ -655,7 +684,7 @@ static inline void rn_gen_key(song_t *csf, song_voice_t *chan, int32_t chan_num,
 		// ST32 ignores global & master volume in adlib mode, guess we should do the same -Bisqwit
 		// This gives a value in the range 0..63.
 		// log_appendf(2,"vol: %d, voiceinsvol: %d", vol , chan->instrument_volume);
-		OPL_Touch(chan_num, vol * chan->instrument_volume * 63 / (1 << 20));
+		OPL_Touch(chan_num, vol * chan->instrument_volume * 63 / (INT32_C(1) << 20));
 		if (csf->flags&SONG_NOSTEREO) {
 			OPL_Pan(chan_num, 128);
 		}
@@ -821,10 +850,10 @@ uint32_t csf_read(song_t *csf, void * v_buffer, uint32_t bufsize)
 
 	// VU-Meter
 	//Reduce range to 8bits signed (-128 to 127).
-	vu_min[0] >>= 19;
-	vu_min[1] >>= 19;
-	vu_max[0] >>= 19;
-	vu_max[1] >>= 19;
+	vu_min[0] = rshift_signed(vu_min[0], 19);
+	vu_min[1] = rshift_signed(vu_min[1], 19);
+	vu_max[0] = rshift_signed(vu_max[0], 19);
+	vu_max[1] = rshift_signed(vu_max[1], 19);
 
 	if (vu_max[0] < vu_min[0])
 		vu_max[0] = vu_min[0];
@@ -1076,18 +1105,18 @@ int32_t csf_read_note(song_t *csf)
 	csf->num_voices = 0;
 
 	for (cn = 0, chan = csf->voices; cn < MAX_VOICES; cn++, chan++) {
-		/*if(cn == 0 || cn == 1)
-		fprintf(stderr, "considering channel %d (per %d, pos %d/%d, flags %X)\n",
+		/*if(cn == 4 || chan->master_channel == 4)
+		fprintf(stderr, "considering voice %d (per %d, pos %d/%d, flags %X)\n",
 			(int32_t)cn, chan->frequency, chan->position, chan->length, chan->flags);*/
 
 		// reset this ~first~
 		if (!(chan->flags & CHN_ADLIB))
 			chan->vu_meter = 0;
 
-		if (chan->flags & CHN_NOTEFADE &&
+		if ((chan->flags & CHN_NOTEFADE) &&
 		    !(chan->fadeout_volume | chan->right_volume | chan->left_volume)) {
 			chan->length = 0;
-			chan->rofs =
+			chan->rofs = 0;
 			chan->lofs = 0;
 			continue;
 		}
@@ -1104,7 +1133,7 @@ int32_t csf_read_note(song_t *csf)
 
 		/* Add panbrello delta */
 		if (chan->panbrello_delta)
-			chan->final_panning += (((chan->panbrello_delta * (int32_t)chan->panbrello_depth) + 2) >> 3);
+			chan->final_panning += rshift_signed((chan->panbrello_delta * (int32_t)chan->panbrello_depth) + 2, 3);
 
 		chan->ramp_length = 0;
 
@@ -1123,7 +1152,7 @@ int32_t csf_read_note(song_t *csf)
 
 			// Clip volume
 			vol = CLAMP(vol, 0, 0x100);
-			vol <<= 6;
+			vol = lshift_signed(vol, 6);
 
 			// Process Envelopes
 			if ((csf->flags & SONG_INSTRUMENTMODE) && chan->ptr_instrument) {
@@ -1147,7 +1176,7 @@ int32_t csf_read_note(song_t *csf)
 					(vol * csf->current_global_volume,
 					 chan->global_volume
 					 * CLAMP(chan->instrument_volume + chan->vol_swing, 0, 64),
-					 1 << 19);
+					 INT32_C(1) << 19);
 			}
 
 			chan->calc_volume = vol;
@@ -1161,6 +1190,9 @@ int32_t csf_read_note(song_t *csf)
 			// Arpeggio ?
 			if (chan->n_command == FX_ARPEGGIO)
 				frequency = rn_arpeggio(csf, chan, frequency);
+
+			// MIDI macros (this is done here in OpenMPT, just take heed from them)
+			rn_process_midi_macro(csf, chan);
 
 			// Pitch/Filter Envelope
 			int32_t envpitch = 0;
@@ -1200,16 +1232,10 @@ int32_t csf_read_note(song_t *csf)
 
 			uint32_t ninc = _muldiv(frequency, 0x10000, csf->mix_frequency);
 
-			if (ninc >= 0xFFB0 && ninc <= 0x10090)
-				ninc = 0x10000;
-
 			if (csf->freq_factor != 128)
 				ninc = (ninc * csf->freq_factor) >> 7;
 
-			if (ninc > 0xFF0000)
-				ninc = 0xFF0000;
-
-			chan->increment = (ninc + 1) & ~3;
+			chan->increment = MAX(1, ninc);
 		}
 
 		chan->final_panning = CLAMP(chan->final_panning, 0, 256);
@@ -1224,7 +1250,7 @@ int32_t csf_read_note(song_t *csf)
 			chan->strike--;
 
 		// Check for too big increment
-		if (((chan->increment >> 16) + 1) >= (int32_t)(chan->loop_end - chan->loop_start))
+		if ((rshift_signed(chan->increment, 16) + 1) >= (int32_t)(chan->loop_end - chan->loop_start))
 			chan->flags &= ~CHN_LOOP;
 
 		chan->right_volume_new = chan->left_volume_new = 0;

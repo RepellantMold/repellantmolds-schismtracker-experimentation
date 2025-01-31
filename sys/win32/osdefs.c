@@ -35,6 +35,7 @@
 
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <winerror.h>
 #include <process.h>
 #include <shlobj.h>
 
@@ -135,6 +136,7 @@ void win32_get_modkey(schism_keymod_t *mk)
 
 void win32_sysinit(SCHISM_UNUSED int *pargc, SCHISM_UNUSED char ***pargv)
 {
+	/* Initialize winsocks */
 	static WSADATA ignored = {0};
 
 	if (WSAStartup(0x202, &ignored) == SOCKET_ERROR) {
@@ -142,6 +144,7 @@ void win32_sysinit(SCHISM_UNUSED int *pargc, SCHISM_UNUSED char ***pargv)
 		status.flags |= NO_NETWORK;
 	}
 
+	/* Build the menus */
 	menu = CreateMenu();
 	{
 		HMENU file = CreatePopupMenu();
@@ -163,7 +166,7 @@ void win32_sysinit(SCHISM_UNUSED int *pargc, SCHISM_UNUSED char ***pargv)
 		AppendMenuA(view, MF_STRING, IDM_VIEW_VIEW_PATTERNS, "View Patterns\tF2");
 		AppendMenuA(view, MF_STRING, IDM_VIEW_ORDERS_PANNING, "Orders/Panning\tF11");
 		AppendMenuA(view, MF_STRING, IDM_VIEW_VARIABLES, "Variables\tF12");
-		AppendMenuA(view, MF_STRING, IDM_VIEW_MESSAGE_EDITOR, "Message Editor\tF9");
+		AppendMenuA(view, MF_STRING, IDM_VIEW_MESSAGE_EDITOR, "Message Editor\tShift+F9");
 		AppendMenuA(view, MF_SEPARATOR, 0, NULL);
 		AppendMenuA(view, MF_STRING, IDM_VIEW_TOGGLE_FULLSCREEN, "Toggle Fullscreen\tCtrl+Alt+Return");
 		AppendMenuA(menu, MF_POPUP, (uintptr_t)view, "&View");
@@ -205,6 +208,49 @@ void win32_sysinit(SCHISM_UNUSED int *pargc, SCHISM_UNUSED char ***pargv)
 #ifdef USE_MEDIAFOUNDATION
 	win32mf_init();
 #endif
+
+	/* Convert command line arguments to UTF-8 */
+	{
+		char **utf8_argv;
+		int utf8_argc;
+
+		int i;
+
+		// Windows NT: use Unicode arguments if available
+		LPWSTR cmdline = GetCommandLineW();
+		if (cmdline) {
+			LPWSTR *argvw = CommandLineToArgvW(cmdline, &utf8_argc);
+
+			if (argvw) {
+				// now we have Unicode arguments, so convert them to UTF-8
+				utf8_argv = mem_alloc(sizeof(char *) * utf8_argc);
+
+				for (i = 0; i < utf8_argc; i++) {
+					charset_iconv(argvw[i], &utf8_argv[i], CHARSET_WCHAR_T, CHARSET_CHAR, SIZE_MAX);
+					if (!utf8_argv[i])
+						utf8_argv[i] = str_dup(""); // ...
+				}
+
+				LocalFree(argvw);
+
+				goto have_utf8_args;
+			}
+		}
+
+		// well, that didn't work, fallback to ANSI.
+		utf8_argc = *pargc;
+		utf8_argv = mem_alloc(sizeof(char *) * utf8_argc);
+
+		for (i = 0; i < utf8_argc; i++) {
+			charset_iconv((*pargv)[i], &utf8_argv[i], CHARSET_ANSI, CHARSET_CHAR, SIZE_MAX);
+			if (!utf8_argv[i])
+				utf8_argv[i] = str_dup(""); // ...
+		}
+
+have_utf8_args: ;
+		*pargv = utf8_argv;
+		*pargc = utf8_argc;
+	}
 }
 
 void win32_sysexit(void)
@@ -327,15 +373,8 @@ int win32_event(schism_event_t *event)
 
 			HDROP drop = (HDROP)event->wm_msg.msg.win.wparam;
 
+#ifdef SCHISM_WIN32_COMPILE_ANSI
 			if (GetVersion() & UINT32_C(0x80000000)) {
-				int needed = DragQueryFileW(drop, 0, NULL, 0);
-
-				wchar_t *f = mem_alloc((needed + 1) * sizeof(wchar_t));
-				DragQueryFileW(drop, 0, f, needed + 1);
-				f[needed] = 0;
-
-				charset_iconv(f, &e.drop.file, CHARSET_WCHAR_T, CHARSET_CHAR, (needed + 1) * sizeof(wchar_t));
-			} else {
 				int needed = DragQueryFileA(drop, 0, NULL, 0);
 
 				char *f = mem_alloc((needed + 1) * sizeof(char));
@@ -343,6 +382,16 @@ int win32_event(schism_event_t *event)
 				f[needed] = 0;
 
 				charset_iconv(f, &e.drop.file, CHARSET_ANSI, CHARSET_CHAR, needed + 1);
+			} else
+#endif
+			{
+				int needed = DragQueryFileW(drop, 0, NULL, 0);
+
+				wchar_t *f = mem_alloc((needed + 1) * sizeof(wchar_t));
+				DragQueryFileW(drop, 0, f, needed + 1);
+				f[needed] = 0;
+
+				charset_iconv(f, &e.drop.file, CHARSET_WCHAR_T, CHARSET_CHAR, (needed + 1) * sizeof(wchar_t));
 			}
 
 			if (!e.drop.file)
@@ -376,6 +425,7 @@ void win32_toggle_menu(void *window, int on)
 
 void win32_show_message_box(const char *title, const char *text)
 {
+#ifdef SCHISM_WIN32_COMPILE_ANSI
 	if (GetVersion() & UINT32_C(0x80000000)) {
 		char *title_a = NULL, *text_a = NULL;
 		if (!charset_iconv(title, &title_a, CHARSET_UTF8, CHARSET_ANSI, SIZE_MAX)
@@ -383,7 +433,9 @@ void win32_show_message_box(const char *title, const char *text)
 			MessageBoxA(NULL, text_a, title_a, MB_OK | MB_ICONINFORMATION);
 		free(title_a);
 		free(text_a);
-	} else {
+	} else
+#endif
+	{
 		wchar_t *title_w = NULL, *text_w = NULL;
 		if (!charset_iconv(title, &title_w, CHARSET_UTF8, CHARSET_WCHAR_T, SIZE_MAX)
 			&& !charset_iconv(text, &text_w, CHARSET_UTF8, CHARSET_WCHAR_T, SIZE_MAX))
@@ -424,7 +476,91 @@ int win32_get_key_repeat(int *pdelay, int *prate)
 
 /* -------------------------------------------------------------------- */
 
-static void win32_stat_conv(struct _stat *mst, struct stat *st)
+// Checks for at least some NT kernel version.
+// Note that this does NOT work for checking above Windows 8.1 because
+// Microsoft. This also fails for Windows 9x, because it doesn't
+// have an NT kernel at all.
+int win32_ntver_atleast(int major, int minor, int build)
+{
+	DWORD version = GetVersion();
+	if (version & 0x80000000)
+		return 0;
+
+	return SCHISM_SEMVER_ATLEAST(major, minor, build,
+		LOBYTE(LOWORD(version)), HIBYTE(LOWORD(version)), HIWORD(version));
+}
+
+/* -------------------------------------------------------------------- */
+
+// By default, waveout devices are limited to 31 chars, which means we get
+// lovely device names like
+//  > Headphones (USB-C to 3.5mm Head
+// Doing this gives us access to longer and more "general" devices names,
+// such as
+//  > G432 Gaming Headset
+// but only if the device supports it!
+//
+// We do this for DirectSound as well mainly to provide some sort of
+// reliability with the device names.
+int win32_audio_lookup_device_name(const void *nameguid, char **result)
+{
+	// format for printing GUIDs with printf
+#define GUIDF "%08" PRIx32 "-%04" PRIx16 "-%04" PRIx16 "-%02" PRIx8 "%02" PRIx8 "-%02" PRIx8 "%02" PRIx8 "%02" PRIx8 "%02" PRIx8 "%02" PRIx8 "%02" PRIx8
+#define GUIDX(x) (x).Data1, (x).Data2, (x).Data3, (x).Data4[0], (x).Data4[1], (x).Data4[2], (x).Data4[3], (x).Data4[4], (x).Data4[5], (x).Data4[6], (x).Data4[7]
+	// Set this to NULL before doing anything
+	*result = NULL;
+
+	WCHAR *strw = NULL;
+	DWORD len = 0;
+
+	static const GUID nullguid = {0};
+	if (!memcmp(nameguid, &nullguid, sizeof(nullguid)))
+		return 0;
+
+	{
+		HKEY hkey;
+		DWORD type;
+
+		WCHAR keystr[256] = {0};
+		_snwprintf(keystr, ARRAY_SIZE(keystr) - 1, L"System\\CurrentControlSet\\Control\\MediaCategories\\{" GUIDF "}", GUIDX(*(const GUID *)nameguid));
+
+		if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, keystr, 0, KEY_QUERY_VALUE, &hkey) != ERROR_SUCCESS)
+			return 0;
+
+		if (RegQueryValueExW(hkey, L"Name", NULL, &type, NULL, &len) != ERROR_SUCCESS || type != REG_SZ) {
+			RegCloseKey(hkey);
+			return 0;
+		}
+
+		strw = mem_alloc(len + sizeof(WCHAR));
+
+		if (RegQueryValueExW(hkey, L"Name", NULL, NULL, (LPBYTE)strw, &len) != ERROR_SUCCESS) {
+			RegCloseKey(hkey);
+			free(strw);
+			return 0;
+		}
+
+		RegCloseKey(hkey);
+	}
+
+	// force NUL terminate
+	strw[len >> 1] = L'\0';
+
+	if (charset_iconv(strw, result, CHARSET_WCHAR_T, CHARSET_UTF8, len + sizeof(WCHAR))) {
+		free(strw);
+		return 0;
+	}
+
+	free(strw);
+	return 1;
+
+#undef GUIDF
+#undef GUIDX
+}
+
+/* -------------------------------------------------------------------- */
+
+static inline SCHISM_ALWAYS_INLINE void win32_stat_conv(struct _stat *mst, struct stat *st)
 {
 	st->st_gid = mst->st_gid;
 	st->st_atime = mst->st_atime;
@@ -443,6 +579,7 @@ int win32_stat(const char* path, struct stat* st)
 {
 	struct _stat mst;
 
+#ifdef SCHISM_WIN32_COMPILE_ANSI
 	if (GetVersion() & UINT32_C(0x80000000)) {
 		// Windows 9x
 		char* ac = NULL;
@@ -453,7 +590,9 @@ int win32_stat(const char* path, struct stat* st)
 			win32_stat_conv(&mst, st);
 			return ret;
 		}
-	} else {
+	} else
+#endif
+	{
 		wchar_t* wc = NULL;
 
 		if (!charset_iconv(path, &wc, CHARSET_UTF8, CHARSET_WCHAR_T, SIZE_MAX)) {
@@ -469,6 +608,7 @@ int win32_stat(const char* path, struct stat* st)
 
 FILE* win32_fopen(const char* path, const char* flags)
 {
+#ifdef SCHISM_WIN32_COMPILE_ANSI
 	if (GetVersion() & UINT32_C(0x80000000)) {
 		// Windows 9x
 		char *ac = NULL, *ac_flags = NULL;
@@ -480,7 +620,9 @@ FILE* win32_fopen(const char* path, const char* flags)
 		free(ac);
 		free(ac_flags);
 		return ret;
-	} else {
+	} else
+#endif
+	{
 		// Windows NT
 		wchar_t* wc = NULL, *wc_flags = NULL;
 		if (charset_iconv(path, &wc, CHARSET_UTF8, CHARSET_WCHAR_T, SIZE_MAX)
@@ -499,6 +641,7 @@ FILE* win32_fopen(const char* path, const char* flags)
 
 int win32_mkdir(const char *path, SCHISM_UNUSED mode_t mode)
 {
+#ifdef SCHISM_WIN32_COMPILE_ANSI
 	if (GetVersion() & UINT32_C(0x80000000)) {
 		char* ac = NULL;
 		if (charset_iconv(path, &ac, CHARSET_UTF8, CHARSET_ANSI, SIZE_MAX))
@@ -507,7 +650,9 @@ int win32_mkdir(const char *path, SCHISM_UNUSED mode_t mode)
 		int ret = mkdir(ac);
 		free(ac);
 		return ret;
-	} else {
+	} else
+#endif
+	{
 		wchar_t* wc = NULL;
 		if (charset_iconv(path, &wc, CHARSET_UTF8, CHARSET_WCHAR_T, SIZE_MAX))
 			return -1;
@@ -523,149 +668,86 @@ int win32_mkdir(const char *path, SCHISM_UNUSED mode_t mode)
 /* ------------------------------------------------------------------------------- */
 /* run hook */
 
-int win32_run_hook_wide(const char *dir, const char *name, const char *maybe_arg)
-{
-#define DOT_BAT L".bat"
-	WCHAR cwd[PATH_MAX] = {0};
-	if (!_wgetcwd(cwd, PATH_MAX))
-		return 0;
-
-	WCHAR batch_file[PATH_MAX] = {0};
-
-	{
-		wchar_t *name_w;
-		if (charset_iconv(name, &name_w, CHARSET_UTF8, CHARSET_WCHAR_T, SIZE_MAX))
-			return 0;
-
-		size_t name_len = wcslen(name_w);
-		if ((name_len * sizeof(WCHAR)) + sizeof(DOT_BAT) >= sizeof(batch_file)) {
-			free(name_w);
-			return 0;
-		}
-
-		memcpy(batch_file, name_w, name_len * sizeof(WCHAR));
-		memcpy(batch_file + name_len, DOT_BAT, sizeof(DOT_BAT));
-
-		free(name_w);
+#define WIN32_RUN_HOOK_VARIANT(name, charset, char_type, char_len_func, char_getcwd, char_chdir, char_getenv, char_spawnlp, char_stat, const_prefix) \
+	static inline SCHISM_ALWAYS_INLINE int _win32_run_hook_##name(const char *dir, const char *name, const char *maybe_arg) \
+	{ \
+		char_type cwd[MAX_PATH] = {0}; \
+		if (!char_getcwd(cwd, MAX_PATH)) \
+			return 0; \
+	\
+		char_type batch_file[MAX_PATH] = {0}; \
+	\
+		{ \
+			char_type *name_w; \
+			if (charset_iconv(name, &name_w, CHARSET_UTF8, charset, SIZE_MAX)) \
+				return 0; \
+	\
+			size_t name_len = char_len_func(name_w); \
+			if ((name_len * sizeof(char_type)) + sizeof(const_prefix##".bat") >= sizeof(batch_file)) { \
+				free(name_w); \
+				return 0; \
+			} \
+	\
+			memcpy(batch_file, name_w, name_len * sizeof(char_type)); \
+			memcpy(batch_file + name_len, const_prefix##".bat", sizeof(const_prefix##".bat")); \
+	\
+			free(name_w); \
+		} \
+	\
+		{ \
+			char_type *dir_w; \
+			if (charset_iconv(dir, &dir_w, CHARSET_UTF8, charset, SIZE_MAX)) \
+				return 0; \
+	\
+			if (char_chdir(dir_w) == -1) { \
+				free(dir_w); \
+				return 0; \
+			} \
+	\
+			free(dir_w); \
+		} \
+	\
+		intptr_t r; \
+	\
+		{ \
+			char_type *maybe_arg_w = NULL; \
+			charset_iconv(maybe_arg, &maybe_arg_w, CHARSET_UTF8, charset, SIZE_MAX); \
+	\
+			struct _stat sb; \
+			if (char_stat(batch_file, &sb) < 0) { \
+				r = 0; \
+			} else { \
+				const char_type *cmd; \
+	\
+				cmd = char_getenv(const_prefix##"COMSPEC"); \
+				if (!cmd) \
+					cmd = const_prefix##"command.com"; \
+	\
+				r = char_spawnlp(_P_WAIT, cmd, cmd, const_prefix##"/c", batch_file, maybe_arg_w, NULL); \
+			} \
+	\
+			free(maybe_arg_w); \
+		} \
+	\
+		char_chdir(cwd); \
+		return (r == 0); \
 	}
 
-	{
-		wchar_t *dir_w;
-		if (charset_iconv(dir, &dir_w, CHARSET_UTF8, CHARSET_WCHAR_T, SIZE_MAX))
-			return 0;
+WIN32_RUN_HOOK_VARIANT(wide, CHARSET_WCHAR_T, WCHAR, wcslen, _wgetcwd, _wchdir, _wgetenv, _wspawnlp, _wstat, L)
+#ifdef SCHISM_WIN32_COMPILE_ANSI
+WIN32_RUN_HOOK_VARIANT(ansi, CHARSET_ANSI, char, strlen, getcwd, _chdir, getenv, _spawnlp, _stat, /* none */)
+#endif
 
-		if (_wchdir(dir_w) == -1) {
-			free(dir_w);
-			return 0;
-		}
-
-		free(dir_w);
-	}
-
-	int r;
-
-	{
-		wchar_t *maybe_arg_w;
-		if (charset_iconv(maybe_arg, &maybe_arg_w, CHARSET_UTF8, CHARSET_WCHAR_T, SIZE_MAX))
-			return 0;
-
-		struct _stat sb;
-		if (_wstat(batch_file, &sb) < 0) {
-			r = 0;
-		} else {
-			const WCHAR *cmd;
-
-			cmd = _wgetenv(L"COMSPEC");
-			if (!cmd)
-				cmd = L"command.com";
-
-			r = _wspawnlp(_P_WAIT, cmd, cmd, "/c", batch_file, maybe_arg_w, 0);
-		}
-
-		free(maybe_arg_w);
-	}
-
-
-	_wchdir(cwd);
-	if (r == 0) return 1;
-	return 0;
-#undef DOT_BAT
-}
-
-int win32_run_hook_ansi(const char *dir, const char *name, const char *maybe_arg)
-{
-#define DOT_BAT ".bat"
-	char cwd[PATH_MAX] = {0};
-	if (!getcwd(cwd, PATH_MAX))
-		return 0;
-
-	char batch_file[PATH_MAX] = {0};
-
-	{
-		char *name_w;
-		if (charset_iconv(name, &name_w, CHARSET_UTF8, CHARSET_ANSI, SIZE_MAX))
-			return 0;
-
-		size_t name_len = strlen(name_w);
-		if ((name_len * sizeof(char)) + sizeof(DOT_BAT) >= sizeof(batch_file)) {
-			free(name_w);
-			return 0;
-		}
-
-		memcpy(batch_file, name_w, name_len * sizeof(char));
-		memcpy(batch_file + name_len, DOT_BAT, sizeof(DOT_BAT));
-
-		free(name_w);
-	}
-
-	{
-		char *dir_w;
-		if (charset_iconv(dir, &dir_w, CHARSET_UTF8, CHARSET_ANSI, SIZE_MAX))
-			return 0;
-
-		if (_chdir(dir_w) == -1) {
-			free(dir_w);
-			return 0;
-		}
-
-		free(dir_w);
-	}
-
-	int r;
-
-	{
-		char *maybe_arg_w;
-		if (charset_iconv(maybe_arg, &maybe_arg_w, CHARSET_UTF8, CHARSET_ANSI, SIZE_MAX))
-			return 0;
-
-		struct _stat sb;
-		if (_stat(batch_file, &sb) < 0) {
-			r = 0;
-		} else {
-			const char *cmd;
-
-			cmd = getenv("COMSPEC");
-			if (!cmd)
-				cmd = "command.com";
-
-			r = _spawnlp(_P_WAIT, cmd, cmd, "/c", batch_file, maybe_arg_w, 0);
-		}
-
-		free(maybe_arg_w);
-	}
-
-
-	_chdir(cwd);
-	if (r == 0) return 1;
-	return 0;
-#undef DOT_BAT
-}
+#undef WIN32_RUN_HOOK_VARIANT
 
 int win32_run_hook(const char *dir, const char *name, const char *maybe_arg)
 {
+#ifdef SCHISM_WIN32_COMPILE_ANSI
 	if (GetVersion() & UINT32_C(0x80000000)) {
-		return win32_run_hook_ansi(dir, name, maybe_arg);
-	} else {
-		return win32_run_hook_wide(dir, name, maybe_arg);
+		return _win32_run_hook_ansi(dir, name, maybe_arg);
+	} else
+#endif
+	{
+		return _win32_run_hook_wide(dir, name, maybe_arg);
 	}
 }
