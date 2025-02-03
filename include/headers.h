@@ -186,20 +186,30 @@
 # define SCHISM_MALLOC
 #endif
 
-#if SCHISM_HAS_C23_ATTRIBUTE(reproducible)
-# define SCHISM_PURE [[reproducible]]
-#elif SCHISM_GNUC_HAS_ATTRIBUTE(__pure__, 2, 96, 0)
+#if SCHISM_GNUC_HAS_ATTRIBUTE(__pure__, 2, 96, 0)
 # define SCHISM_PURE __attribute__((__pure__))
+#elif SCHISM_HAS_C23_ATTRIBUTE(reproducible)
+# define SCHISM_PURE [[reproducible]]
 #else
 # define SCHISM_PURE
 #endif
 
-#if SCHISM_HAS_C23_ATTRIBUTE(unsequenced)
-# define SCHISM_CONST [[unsequenced]]
-#elif SCHISM_GNUC_HAS_ATTRIBUTE(__const__, 2, 5, 0)
+#if SCHISM_GNUC_HAS_ATTRIBUTE(__const__, 2, 5, 0)
 # define SCHISM_CONST __attribute__((__const__))
+#elif SCHISM_HAS_C23_ATTRIBUTE(unsequenced)
+# define SCHISM_CONST [[unsequenced]]
 #else
 # define SCHISM_CONST
+#endif
+
+#if SCHISM_HAS_C23_ATTRIBUTE(noreturn)
+# define SCHISM_NORETURN [[noreturn]]
+#elif (__STDC_VERSION__ >= 201112L)
+# define SCHISM_NORETURN _Noreturn
+#elif SCHISM_GNUC_HAS_ATTRIBUTE(__noreturn__, 2, 5, 0)
+# define SCHISM_NORETURN __attribute__((__noreturn__))
+#else
+# define SCHISM_NORETURN
 #endif
 
 #if SCHISM_GNUC_HAS_ATTRIBUTE(__format__, 2, 3, 0)
@@ -263,10 +273,10 @@
 /* ------------------------------------------------------------------------ */
 
 #ifndef HAVE_ASPRINTF
-int asprintf(char **strp, SCHISM_PRINTF_FORMAT_PARAM const char *fmt, ...);
+int asprintf(char **strp, SCHISM_PRINTF_FORMAT_PARAM const char *fmt, ...) SCHISM_FORMAT(printf, 2, 3);
 #endif
 #ifndef HAVE_VASPRINTF
-int vasprintf(char **strp, SCHISM_PRINTF_FORMAT_PARAM const char *fmt, va_list ap) SCHISM_FORMAT(printf, 2, 3);
+int vasprintf(char **strp, SCHISM_PRINTF_FORMAT_PARAM const char *fmt, va_list ap) SCHISM_FORMAT(printf, 2, 0);
 #endif
 #ifndef HAVE_SNPRINTF
 #undef snprintf // stupid windows
@@ -274,7 +284,7 @@ int snprintf(char *buffer, size_t count, SCHISM_PRINTF_FORMAT_PARAM const char *
 #endif
 #ifndef HAVE_VSNPRINTF
 #undef vsnprintf // stupid windows
-int vsnprintf(char *buffer, size_t count, SCHISM_PRINTF_FORMAT_PARAM const char *fmt, va_list ap);
+int vsnprintf(char *buffer, size_t count, SCHISM_PRINTF_FORMAT_PARAM const char *fmt, va_list ap) SCHISM_FORMAT(printf, 2, 0);
 #endif
 #ifndef HAVE_STRPTIME
 char *strptime(const char *buf, const char *fmt, struct tm *tm);

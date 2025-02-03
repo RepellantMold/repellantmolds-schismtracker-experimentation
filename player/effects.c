@@ -33,10 +33,6 @@
 
 #include <math.h>
 
-
-// see also csf_midi_out_note in sndmix.c
-void (*csf_midi_out_raw)(const unsigned char *,uint32_t, uint32_t) = NULL;
-
 /* --------------------------------------------------------------------------------------------------------- */
 /* note/freq conversion functions */
 
@@ -101,11 +97,11 @@ void fx_note_cut(song_t *csf, uint32_t nchan, int clear_note)
 
 	if (chan->flags & CHN_ADLIB) {
 		//Do this only if really an adlib chan. Important!
-		OPL_NoteOff(nchan);
-		OPL_Touch(nchan, 0);
+		OPL_NoteOff(csf, nchan);
+		OPL_Touch(csf, nchan, 0);
 	}
-	GM_KeyOff(nchan);
-	GM_Touch(nchan, 0);
+	GM_KeyOff(csf, nchan);
+	GM_Touch(csf, nchan, 0);
 }
 
 void fx_key_off(song_t *csf, uint32_t nchan)
@@ -116,9 +112,9 @@ void fx_key_off(song_t *csf, uint32_t nchan)
 		tick_count, (unsigned)nchan, chan->flags);*/
 	if (chan->flags & CHN_ADLIB) {
 		//Do this only if really an adlib chan. Important!
-		OPL_NoteOff(nchan);
+		OPL_NoteOff(csf, nchan);
 	}
-	GM_KeyOff(nchan);
+	GM_KeyOff(csf, nchan);
 
 	song_instrument_t *penv = (csf->flags & SONG_INSTRUMENTMODE) ? chan->ptr_instrument : NULL;
 
@@ -804,7 +800,7 @@ void csf_midi_send(song_t *csf, const unsigned char *data, uint32_t len, uint32_
 			}
 			break;
 		}
-	} else if (!fake && csf_midi_out_raw) {
+	} else if (!fake && csf->midi_out_raw) {
 		/* okay, this is kind of how it works.
 		we pass buffer_count as here because while
 			1000 * ((8((buffer_size/2) - buffer_count)) / sample_rate)
@@ -815,7 +811,7 @@ void csf_midi_send(song_t *csf, const unsigned char *data, uint32_t len, uint32_
 		fortunately, schism does and can complete this (tags: _schism_midi_out_raw )
 
 		*/
-		csf_midi_out_raw(data, len, csf->buffer_count);
+		csf->midi_out_raw(csf, data, len, csf->buffer_count);
 	}
 }
 
@@ -1607,11 +1603,11 @@ void csf_check_nna(song_t *csf, uint32_t nchan, uint32_t instr, int note, int fo
 		chan->left_volume = chan->right_volume = 0;
 		if (chan->flags & CHN_ADLIB) {
 			//Do this only if really an adlib chan. Important!
-			OPL_NoteOff(nchan);
-			OPL_Touch(nchan, 0);
+			OPL_NoteOff(csf, nchan);
+			OPL_Touch(csf, nchan, 0);
 		}
-		GM_KeyOff(nchan);
-		GM_Touch(nchan, 0);
+		GM_KeyOff(csf, nchan);
+		GM_Touch(csf, nchan, 0);
 		return;
 	}
 	if (instr >= MAX_INSTRUMENTS) instr = 0;
@@ -2172,11 +2168,11 @@ void csf_process_effects(song_t *csf, int firsttick)
 				/* Possibly a better bugfix could be devised. --Bisqwit */
 				if (chan->flags & CHN_ADLIB) {
 					//Do this only if really an adlib chan. Important!
-					OPL_NoteOff(nchan);
-					OPL_Touch(nchan, 0);
+					OPL_NoteOff(csf, nchan);
+					OPL_Touch(csf, nchan, 0);
 				}
-				GM_KeyOff(nchan);
-				GM_Touch(nchan, 0);
+				GM_KeyOff(csf, nchan);
+				GM_Touch(csf, nchan, 0);
 			}
 
 			const int previous_new_note = chan->new_note; 
@@ -2200,11 +2196,11 @@ void csf_process_effects(song_t *csf, int firsttick)
 
 				csf_instrument_change(csf, chan, instr, porta, 1);
 				if (csf->samples[instr].flags & CHN_ADLIB) {
-					OPL_Patch(nchan, csf->samples[instr].adlib_bytes);
+					OPL_Patch(csf, nchan, csf->samples[instr].adlib_bytes);
 				}
 
 				if((csf->flags & SONG_INSTRUMENTMODE) && csf->instruments[instr])
-					GM_DPatch(nchan, csf->instruments[instr]->midi_program,
+					GM_DPatch(csf, nchan, csf->instruments[instr]->midi_program,
 						csf->instruments[instr]->midi_bank,
 						csf->instruments[instr]->midi_channel_mask);
 
@@ -2227,9 +2223,9 @@ void csf_process_effects(song_t *csf, int firsttick)
 					    && chan->new_instrument < MAX_INSTRUMENTS
 					    && csf->instruments[chan->new_instrument]) {
 						if (csf->samples[chan->new_instrument].flags & CHN_ADLIB) {
-							OPL_Patch(nchan, csf->samples[chan->new_instrument].adlib_bytes);
+							OPL_Patch(csf, nchan, csf->samples[chan->new_instrument].adlib_bytes);
 						}
-						GM_DPatch(nchan, csf->instruments[chan->new_instrument]->midi_program,
+						GM_DPatch(csf, nchan, csf->instruments[chan->new_instrument]->midi_program,
 							csf->instruments[chan->new_instrument]->midi_bank,
 							csf->instruments[chan->new_instrument]->midi_channel_mask);
 					}

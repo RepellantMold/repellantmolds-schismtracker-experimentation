@@ -321,6 +321,14 @@ x8*)
 esac
 
 dnl -----------------------------------------------------------------------
+dnl Retrieve size of floating point numbers. This is later used to bypass
+dnl binary decoding of IEEE numbers in ieee-float.c
+
+AC_CHECK_SIZEOF([float])
+AC_CHECK_SIZEOF([double])
+AC_CHECK_SIZEOF([long double])
+
+dnl -----------------------------------------------------------------------
 
 dnl Platform-specific behavior
 AC_MSG_CHECKING([host platform])
@@ -475,11 +483,10 @@ case "${host_os}" in
 esac
 
 dnl Libs
-AC_SEARCH_LIBS([dlopen], [dl])
-if test "x$ac_cv_search_dlopen" = "xyes" || test "x$ac_cv_search_dlopen" = "xnone required"; then
+AC_SEARCH_LIBS([dlopen], [dl], [
 	AC_DEFINE([HAVE_LIBDL], [1], [ ])
 	have_loadso=yes
-fi
+], [])
 
 if test "x$use_macosx" = "xyes"; then
 	AC_PROG_OBJC
