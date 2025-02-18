@@ -221,7 +221,7 @@ static void info_draw_technical(int base, int height, int active, int first_chan
 
 static void info_draw_samples(int base, int height, int active, int first_channel)
 {
-	int vu, smp, ins, n, pos, fg, fg2, c = first_channel;
+	int vu, smp, ins, n, pos, fg, fg2, c;
 	char buf[8];
 	char *ptr;
 
@@ -238,7 +238,7 @@ static void info_draw_samples(int base, int height, int active, int first_channe
 	}
 
 	if (song_get_mode() == MODE_STOPPED) {
-		for (pos = base + 1; pos < base + height - 1; pos++, c++) {
+		for (pos = base + 1, c = first_channel; pos < base + height - 1; pos++, c++) {
 			song_channel_t *channel = song_get_channel(c - 1);
 
 			if (c == selected_channel) {
@@ -253,7 +253,7 @@ static void info_draw_samples(int base, int height, int active, int first_channe
 		return;
 	}
 
-	for (pos = base + 1; pos < base + height - 1; pos++, c++) {
+	for (pos = base + 1, c = first_channel; pos < base + height - 1; pos++, c++) {
 		song_voice_t *voice = current_song->voices + c - 1;
 		/* always draw the channel number */
 

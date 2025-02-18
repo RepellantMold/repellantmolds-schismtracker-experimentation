@@ -89,10 +89,14 @@ void fx_note_cut(song_t *csf, uint32_t nchan, int clear_note)
 	//if (chan->ptr_instrument) chan->volume = 0;
 	chan->increment = 0;
 	chan->fadeout_volume = 0;
+	//chan->length = 0;
 	if (clear_note) {
 		// keep instrument numbers from picking up old notes
 		// (SCx doesn't do this)
-		chan->note = chan->new_note = NOTE_NONE;
+		// Apparently this isn't necessary at all anymore?
+		// Note cuts seem to work perfectly fine without it.
+		// SCx plays fine too.  -paper
+		//chan->frequency = 0;
 	}
 
 	if (chan->flags & CHN_ADLIB) {
@@ -1497,13 +1501,13 @@ void csf_note_change(song_t *csf, uint32_t nchan, int note, int porta, int retri
 	}
 
 	/* OpenMPT test cases Off-Porta.it, Off-Porta-CompatGxx.it */
-	if (porta && (csf->flags & SONG_COMPATGXX && chan->row_instr))
+	if (!(porta && (!(csf->flags & SONG_COMPATGXX) || !chan->row_instr)))
 		chan->flags &= ~CHN_KEYOFF;
 
 	// Enable Ramping
 	if (!porta) {
-		chan->vu_meter = 0x0;
-		chan->strike = 4; /* this affects how long the initial hit on the playback marks lasts (bigger dot in instrument and sample list windows)*/
+		//chan->vu_meter = 0x0;
+		chan->strike = 4; /* this affects how long the initial hit on the playback marks lasts (bigger dot in instrument and sample list windows) */
 		chan->flags &= ~CHN_FILTER;
 		chan->flags |= CHN_FASTVOLRAMP | CHN_NEWNOTE;
 		if (!retrig) {
@@ -1647,7 +1651,16 @@ void csf_check_nna(song_t *csf, uint32_t nchan, uint32_t instr, int note, int fo
 		if (apply_dna) {
 			switch(p->ptr_instrument->dca) {
 			case DCA_NOTECUT:
-				fx_note_cut(csf, i, 1);
+				fx_key_off(csf, i);
+				p->volume = 0;
+				if (chan->flags & CHN_ADLIB) {
+					//Do this only if really an adlib chan. Important!
+					//
+					// This isn't very useful really since we can't save
+					// Adlib songs with instruments anyway, but whatever.
+					OPL_NoteOff(csf, nchan);
+					OPL_Touch(csf, nchan, 0);
+				}
 				break;
 			case DCA_NOTEOFF:
 				fx_key_off(csf, i);
@@ -1685,6 +1698,7 @@ void csf_check_nna(song_t *csf, uint32_t nchan, uint32_t instr, int note, int fo
 				break;
 			case NNA_NOTECUT:
 				p->fadeout_volume = 0;
+				/* fallthrough */
 			case NNA_NOTEFADE:
 				p->flags |= CHN_NOTEFADE;
 				break;
