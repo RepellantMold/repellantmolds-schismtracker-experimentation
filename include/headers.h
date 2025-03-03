@@ -299,8 +299,15 @@
 # define SCHISM_LIKELY(x)   __builtin_expect(!!(x), 1)
 # define SCHISM_UNLIKELY(x) __builtin_expect(!(x),  1)
 #else
-# define SCHISM_LIKELY(x)
-# define SCHISM_UNLIKELY(x)
+# define SCHISM_LIKELY(x)   (x)
+# define SCHISM_UNLIKELY(x) (x)
+#endif
+
+/* Win32, used for threads */
+#if SCHISM_GNUC_HAS_ATTRIBUTE(__force_align_arg_pointer__, 4, 2, 0)
+# define SCHISM_FORCE_ALIGN_ARG_POINTER __attribute__((__force_align_arg_pointer__))
+#else
+# define SCHISM_FORCE_ALIGN_ARG_POINTER
 #endif
 
 /* Used to mark a printf format parameter. Currently only MSVC really

@@ -62,12 +62,19 @@ A return value of 0 indicates that the event should NOT be processed by the main
 # define os_sysinit macosx_sysinit
 # define os_get_modkey macosx_get_modkey
 # define os_get_key_repeat macosx_get_key_repeat
+# define os_show_message_box macosx_show_message_box
 #elif defined(SCHISM_MACOS)
 # define os_mkdir macos_mkdir
 # define os_stat macos_stat
 # define os_show_message_box macos_show_message_box
 # define os_sysinit macos_sysinit
 # define os_get_modkey macos_get_modkey
+#elif defined(SCHISM_OS2)
+# define os_mkdir os2_mkdir
+# define os_stat os2_stat
+# define os_fopen os2_fopen
+# define os_get_key_repeat os2_get_key_repeat
+# define os_show_message_box os2_show_message_box
 #endif
 
 #if defined(SCHISM_WIN32)
@@ -142,8 +149,11 @@ FILE* win32_fopen(const char* path, const char* flags);
 int win32_run_hook(const char *dir, const char *name, const char *maybe_arg);
 int win32_get_key_repeat(int *pdelay, int *prate);
 void win32_show_message_box(const char *title, const char *text);
-int win32_audio_lookup_device_name(const void *nameguid, char **result);
+int win32_audio_lookup_device_name(const void *nameguid, const uint32_t *waveoutdevid, char **result);
 int win32_ntver_atleast(int major, int minor, int build);
+
+// audio-dsound.c
+int win32_dsound_audio_lookup_waveout_name(const uint32_t *waveoutnamev, char **result);
 
 int posix_run_hook(const char *dir, const char *name, const char *maybe_arg);
 
@@ -153,6 +163,7 @@ void macosx_sysinit(int *pargc, char ***pargv); /* set up ibook helper */
 void macosx_get_modkey(schism_keymod_t *m);
 int macosx_get_key_repeat(int *pdelay, int *prate);
 char *macosx_get_application_support_dir(void);
+void macosx_show_message_box(const char *title, const char *text);
 
 int macos_mkdir(const char *path, mode_t mode);
 int macos_stat(const char *file, struct stat *st);
@@ -161,5 +172,11 @@ void macos_sysinit(int *pargc, char ***pargv);
 void macos_get_modkey(schism_keymod_t *mk);
 
 int x11_event(schism_event_t *event);
+
+int os2_stat(const char* path, struct stat* st);
+int os2_mkdir(const char* path, mode_t mode);
+FILE* os2_fopen(const char* path, const char* flags);
+int os2_get_key_repeat(int *pdelay, int *prate);
+void os2_show_message_box(const char *title, const char *text);
 
 #endif /* SCHISM_OSDEFS_H_ */

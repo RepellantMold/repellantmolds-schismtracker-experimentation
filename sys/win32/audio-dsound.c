@@ -27,6 +27,17 @@
 // This should be viable via GetDeviceID() in dsound.dll which lets us
 // check the GUID of the current default device.
 
+// TODO: We should also detect whether a device opened is just emulating
+// waveout, and use the APIs directly if so. It looks like this can be
+// accomplished via DSPROPERTY_DIRECTSOUNDDEVICE_WAVEDEVICEMAPPING_DATA
+// and IKsPropertySet, which involves dynamic loading (we are already
+// doing that anyway)
+// Additionally, we should also use that API to retrieve full device names
+// when using waveout, since the method we are currently using doesn't
+// seem to work all too well.
+
+#define COBJMACROS
+
 #include "headers.h"
 #include "charset.h"
 #include "mt.h"
@@ -167,6 +178,10 @@ static inline void _dsound_device_append(LPGUID lpguid, char *name)
 		IDirectSound_Release(dsound);
 	}
 
+	for (size_t i = 0; i < devices_size; i++)
+		if (!memcmp(&devices[i].guid, lpguid, sizeof(GUID)))
+			return;
+
 	if (devices_size >= devices_alloc) {
 		devices_alloc = ((!devices_alloc) ? 1 : (devices_alloc * 2));
 
@@ -187,7 +202,7 @@ static inline void _dsound_device_append(LPGUID lpguid, char *name)
 		if (lpGuid != NULL) { \
 			char *name = NULL; \
 	\
-			if (win32_audio_lookup_device_name(lpGuid, &name) || !charset_iconv(lpcstrDescription, &name, charset, CHARSET_UTF8, SIZE_MAX)) \
+			if (win32_audio_lookup_device_name(lpGuid, NULL, &name) || !charset_iconv(lpcstrDescription, &name, charset, CHARSET_UTF8, SIZE_MAX)) \
 				_dsound_device_append(lpGuid, name); \
 	\
 			/* device list takes ownership of `name` */ \
@@ -205,24 +220,13 @@ DSOUND_ENUMERATE_CALLBACK_VARIANT(LPCWSTR, CHARSET_WCHAR_T, w)
 
 static uint32_t dsound_audio_device_count(void)
 {
-	_dsound_free_devices();
-
 	// Prefer Unicode
-	if (DSOUND_DirectSoundEnumerateW) {
-		if (DSOUND_DirectSoundEnumerateW(_dsound_enumerate_callback_w, NULL) == DS_OK)
-			return devices_size;
-
-		// Free any devices that might have been added
-		_dsound_free_devices();
-	}
+	if (DSOUND_DirectSoundEnumerateW && DSOUND_DirectSoundEnumerateW(_dsound_enumerate_callback_w, NULL) == DS_OK)
+		return devices_size;
 
 #ifdef SCHISM_WIN32_COMPILE_ANSI
-	if (DSOUND_DirectSoundEnumerateA) {
-		if (DSOUND_DirectSoundEnumerateA(_dsound_enumerate_callback_a, NULL) == DS_OK)
-			return devices_size;
-
-		_dsound_free_devices();
-	}
+	if (DSOUND_DirectSoundEnumerateA && DSOUND_DirectSoundEnumerateA(_dsound_enumerate_callback_a, NULL) == DS_OK)
+		return devices_size;
 #endif
 
 	return 0;
@@ -609,19 +613,28 @@ static void dsound_audio_pause_device(schism_audio_device_t *dev, int paused)
 //////////////////////////////////////////////////////////////////////////////
 // dynamic loading
 
+#include <dsconf.h>
+#include <unknwn.h>
+
+static void *lib_ole32 = NULL;
 static void *lib_dsound = NULL;
+
+static HRESULT (WINAPI *OLE32_CoInitializeEx)(LPVOID, DWORD) = NULL;
+static void (WINAPI *OLE32_CoUninitialize)(void) = NULL;
+
+static IKsPropertySet *dsound_propset = NULL;
 
 static int dsound_audio_init(void)
 {
-	// Most audio drivers on NT 4 are just waveout
-	// in disguise, so punt here. Possibly a better
-	// solution could be contrived...
-	if (!win32_ntver_atleast(5, 0, 0))
-		return 0;
-
 	lib_dsound = loadso_object_load("DSOUND.DLL");
 	if (!lib_dsound)
 		return 0;
+
+	lib_ole32 = loadso_object_load("OLE32.DLL");
+	if (!lib_ole32) {
+		loadso_object_unload(lib_dsound);
+		return 0;
+	}
 
 	DSOUND_DirectSoundCreate = loadso_function_load(lib_dsound, "DirectSoundCreate");
 #ifdef SCHISM_WIN32_COMPILE_ANSI
@@ -629,8 +642,39 @@ static int dsound_audio_init(void)
 #endif
 	DSOUND_DirectSoundEnumerateW = loadso_function_load(lib_dsound, "DirectSoundEnumerateW");
 
+	OLE32_CoInitializeEx = loadso_function_load(lib_ole32, "CoInitializeEx");
+	OLE32_CoUninitialize = loadso_function_load(lib_ole32, "CoUninitialize");
+
+	if (!OLE32_CoInitializeEx || !OLE32_CoUninitialize) {
+		loadso_object_unload(lib_dsound);
+		loadso_object_unload(lib_ole32);
+		return 0;
+	}
+
+	switch (OLE32_CoInitializeEx(NULL, COINIT_APARTMENTTHREADED)) {
+	case S_OK:
+	case S_FALSE:
+	case RPC_E_CHANGED_MODE:
+		break;
+	default:
+		loadso_object_unload(lib_dsound);
+		loadso_object_unload(lib_ole32);
+		return 0;
+	}
+
+	dsound_propset = NULL;
+
+	// wuh?
+	HRESULT (WINAPI *DSOUND_DllGetClassObject)(REFCLSID, REFIID, LPVOID *) = loadso_function_load(lib_dsound, "DllGetClassObject");
+	if (DSOUND_DllGetClassObject) {
+		IClassFactory *factory;
+		if (SUCCEEDED(DSOUND_DllGetClassObject(&CLSID_DirectSoundPrivate, &IID_IClassFactory, (LPVOID *)&factory)))
+			IClassFactory_CreateInstance(factory, NULL, &IID_IKsPropertySet, (LPVOID *)&dsound_propset);
+	}
+
 	if (!DSOUND_DirectSoundCreate || !loadso_function_load(lib_dsound, "DirectSoundCaptureCreate")) {
 		loadso_object_unload(lib_dsound);
+		loadso_object_unload(lib_ole32);
 		return 0;
 	}
 
@@ -648,6 +692,18 @@ static void dsound_audio_quit(void)
 	if (lib_dsound) {
 		loadso_object_unload(lib_dsound);
 		lib_dsound = NULL;
+	}
+
+	OLE32_CoUninitialize();
+
+	if (lib_ole32) {
+		loadso_object_unload(lib_ole32);
+		lib_ole32 = NULL;
+	}
+
+	if (dsound_propset) {
+		IKsPropertySet_Release(dsound_propset);
+		dsound_propset = NULL;
 	}
 }
 
@@ -672,3 +728,85 @@ const schism_audio_backend_t schism_audio_backend_dsound = {
 	.unlock_device = dsound_audio_unlock_device,
 	.pause_device = dsound_audio_pause_device,
 };
+
+//////////////////////////////////////////////////////////////////////////////
+
+// no charset-specific stuff here, that cruft is handled in the callbacks
+struct dsound_audio_lookup_callback_data {
+	UINT id;      // input
+	GUID guid;    // output for description callback, input for device callback
+	char *result; // output
+};
+
+#define WIN32_DSOUND_AUDIO_LOOKUP_WAVEOUT_NAME_IMPL(AorW, TYPE, CHARSET) \
+	static BOOL CALLBACK dsound_enumerate_lookup_device_callback_##AorW##_(LPGUID lpGuid, const TYPE *lpcstrDescription, SCHISM_UNUSED const TYPE *lpcstrModule, LPVOID lpContext) \
+	{ \
+		struct dsound_audio_lookup_callback_data *data = lpContext; \
+	\
+		if (lpGuid && !memcmp(lpGuid, &data->guid, sizeof(GUID))) { \
+			data->result = charset_iconv_easy(lpcstrDescription, CHARSET, CHARSET_UTF8); \
+			return FALSE; \
+		} \
+	\
+		return TRUE; \
+	} \
+	\
+	static BOOL CALLBACK dsound_enumerate_lookup_description_callback_##AorW##_(PDSPROPERTY_DIRECTSOUNDDEVICE_DESCRIPTION_##AorW##_DATA pdata, LPVOID puserdata) \
+	{ \
+		struct dsound_audio_lookup_callback_data *pcbdata = puserdata; \
+	\
+		if (pdata && (pdata->WaveDeviceId == pcbdata->id)) { \
+			memcpy(&pcbdata->guid, &pdata->DeviceId, sizeof(GUID)); \
+			if (pdata->Description) pcbdata->result = charset_iconv_easy(pdata->Description, CHARSET, CHARSET_ANSI); \
+			return FALSE; \
+		} \
+	\
+		return TRUE; \
+	} \
+	\
+	static inline int SCHISM_ALWAYS_INLINE win32_dsound_audio_lookup_waveout_name_##AorW(uint32_t waveoutdevid, char **result) \
+	{ \
+		ULONG ulxyzzy; \
+	\
+		if (!DSOUND_DirectSoundEnumerate##AorW) \
+			return 0; \
+	\
+		struct dsound_audio_lookup_callback_data cbdata = { .id = waveoutdevid }; \
+	\
+		DSPROPERTY_DIRECTSOUNDDEVICE_ENUMERATE_##AorW##_DATA data = { \
+			.Callback = dsound_enumerate_lookup_description_callback_##AorW##_, \
+			.Context = &cbdata, \
+		}; \
+	\
+		if (SUCCEEDED(IKsPropertySet_Get(dsound_propset, &DSPROPSETID_DirectSoundDevice, DSPROPERTY_DIRECTSOUNDDEVICE_ENUMERATE_##AorW, &data, sizeof(data), &data, sizeof(data), &ulxyzzy))) { \
+			/* we don't need to enumerate twice if we already received the result */ \
+			if (cbdata.result) { *result = cbdata.result; return 1; } \
+	\
+			DSOUND_DirectSoundEnumerate##AorW(dsound_enumerate_lookup_device_callback_##AorW##_, &cbdata); \
+			if (cbdata.result) { *result = cbdata.result; return 1; } \
+		} \
+	\
+		return 0; \
+	}
+
+#ifdef SCHISM_WIN32_COMPILE_ANSI
+WIN32_DSOUND_AUDIO_LOOKUP_WAVEOUT_NAME_IMPL(A, CHAR, CHARSET_ANSI)
+#endif
+WIN32_DSOUND_AUDIO_LOOKUP_WAVEOUT_NAME_IMPL(W, WCHAR, CHARSET_WCHAR_T)
+
+#undef WIN32_DSOUND_AUDIO_LOOKUP_WAVEOUT_NAME_IMPL
+
+int win32_dsound_audio_lookup_waveout_name(const uint32_t *waveoutdevid, char **result)
+{
+	if (!waveoutdevid || !dsound_propset)
+		return 0;
+
+#ifdef SCHISM_WIN32_COMPILE_ANSI
+	if (GetVersion() & 0x80000000U) { // Win9x
+		return win32_dsound_audio_lookup_waveout_name_A(*waveoutdevid, result);
+	} else
+#endif
+	{ // WinNT
+		return win32_dsound_audio_lookup_waveout_name_W(*waveoutdevid, result);
+	}
+}

@@ -54,7 +54,6 @@
 #endif
 #define DEF_CHANNEL_LIMIT 128
 
-static int midi_playing;
 // ------------------------------------------------------------------------
 
 #define SMP_INIT (UINT_MAX - 1) /* for a click noise on init */
@@ -74,7 +73,6 @@ static int audio_writeout_count = 0;
 
 struct audio_settings audio_settings = {0};
 
-static void _schism_midi_out_note(song_t *csf, int chan, const song_note_t *m);
 static void _schism_midi_out_raw(song_t *csf, const unsigned char *data, uint32_t len, uint32_t delay);
 
 /* Audio driver related stuff */
@@ -83,6 +81,7 @@ static void _schism_midi_out_raw(song_t *csf, const unsigned char *data, uint32_
 /* The (short) name of the SDL driver in use, e.g. "alsa" */
 static char *driver_name = NULL;
 static char *device_name = NULL;
+static uint32_t device_id = 0;
 
 /* Whatever was in the config file. This is used if no driver is given to audio_setup. */
 static char cfg_audio_driver[256] = { 0 };
@@ -91,7 +90,7 @@ static char cfg_audio_device[256] = { 0 };
 // ------------------------------------------------------------------------
 
 struct audio_device* audio_device_list = NULL;
-int audio_device_list_size = 0;
+size_t audio_device_list_size = 0;
 
 static schism_audio_device_t *current_audio_device = NULL;
 
@@ -125,6 +124,7 @@ static const schism_audio_backend_t *backend = NULL;
 // ------------------------------------------------------------------------
 // playback
 
+// page_patedit.c
 extern int midi_bend_hit[64], midi_last_bend_hit[64];
 
 // this gets called from the backend
@@ -205,13 +205,8 @@ POST_EVENT:
 // ------------------------------------------------------------------------------------------------------------
 // audio device list
 
-// FIXME: doing it this way causes for duplicate device names to be handled as the same device; this
-// isn't necessarily true! for example, Boot Camp drivers are weird and buggy, and can (and do) create
-// "dummy" speaker devices. When plugging in an audio device to the headphone port, it results in the
-// driver making two audio devices named "Speakers (High Definition Audio Device)"
-
 void free_audio_device_list(void) {
-	for (int count = 0; count < audio_device_list_size; count++)
+	for (size_t count = 0; count < audio_device_list_size; count++)
 		free(audio_device_list[count].name);
 
 	free(audio_device_list);
@@ -231,9 +226,8 @@ int refresh_audio_device_list(void) {
 		return 0;
 
 	for (uint32_t i = 0; i < count; i++) {
-		struct audio_device* dev = audio_device_list + i;
-		dev->id = i;
-		dev->name = str_dup(backend ? backend->device_name(i) : "");
+		audio_device_list[i].id = i;
+		audio_device_list[i].name = str_dup(backend ? backend->device_name(i) : "");
 	}
 
 	audio_device_list_size = count;
@@ -571,17 +565,17 @@ static int song_keydown_ex(int samp, int ins, int note, int vol, int chan, int e
 
 	if (!(status.flags & MIDI_LIKE_TRACKER) && i) {
 		/* midi keyjazz shouldn't require a sample */
-		song_note_t mc = {
-			.note = note ? note : midi_note,
+		song_note_t mc = {0};
 
-			.instrument = ins,
-			.voleffect = VOLFX_VOLUME,
-			.volparam = vol,
-			.effect = effect,
-			.param = param,
-		};
+		mc.note = note ? note : midi_note;
 
-		_schism_midi_out_note(current_song, chan_internal, &mc);
+		mc.instrument = ins;
+		mc.voleffect = VOLFX_VOLUME;
+		mc.volparam = vol;
+		mc.effect = effect;
+		mc.param = param;
+
+		csf_midi_out_note(current_song, chan_internal, &mc);
 	}
 
 	/*
@@ -743,38 +737,27 @@ void song_stop(void)
 	main_song_mode_changed_cb();
 }
 
-/* for midi translation */
-static int note_tracker[64];
-static int vol_tracker[64];
-static int ins_tracker[64];
-static int was_program[16];
-static int was_banklo[16];
-static int was_bankhi[16];
-
-static const song_note_t *last_row[64];
-static int last_row_number = -1;
-
 void song_stop_unlocked(int quitting)
 {
 	if (!current_song) return;
 
-	if (midi_playing) {
+	if (current_song->midi_playing) {
 		unsigned char moff[4];
 
 		/* shut off everything; not IT like, but less annoying */
 		for (int chan = 0; chan < 64; chan++) {
-			if (note_tracker[chan] != 0) {
-				for (int j = 0; j < 16; j++) {
+			if (current_song->midi_note_tracker[chan] != 0) {
+				for (int j = 0; j < MAX_MIDI_CHANNELS; j++) {
 					csf_process_midi_macro(current_song, chan,
 						current_song->midi_config.note_off,
-						0, note_tracker[chan], 0, j);
+						0, current_song->midi_note_tracker[chan], 0, j);
 				}
 				moff[0] = 0x80 + chan;
-				moff[1] = note_tracker[chan];
+				moff[1] = current_song->midi_note_tracker[chan];
 				csf_midi_send(current_song, (unsigned char *) moff, 2, 0, 0);
 			}
 		}
-		for (int j = 0; j < 16; j++) {
+		for (int j = 0; j < MAX_MIDI_CHANNELS; j++) {
 			moff[0] = 0xe0 + j;
 			moff[1] = 0;
 			csf_midi_send(current_song, (unsigned char *) moff, 2, 0, 0);
@@ -794,22 +777,22 @@ void song_stop_unlocked(int quitting)
 		csf_process_midi_macro(current_song, 0, current_song->midi_config.stop, 0, 0, 0, 0); // STOP!
 		midi_send_flush(); // NOW!
 
-		midi_playing = 0;
+		current_song->midi_playing = 0;
 	}
 
 	OPL_Reset(current_song); /* Also stop all OPL sounds */
 	GM_Reset(current_song, quitting);
 	GM_SendSongStopCode(current_song);
 
-	memset(last_row,0,sizeof(last_row));
-	last_row_number = -1;
+	memset(current_song->midi_last_row,0,sizeof(current_song->midi_last_row));
+	current_song->midi_last_row_number = -1;
 
-	memset(note_tracker,0,sizeof(note_tracker));
-	memset(vol_tracker,0,sizeof(vol_tracker));
-	memset(ins_tracker,0,sizeof(ins_tracker));
-	memset(was_program,0,sizeof(was_program));
-	memset(was_banklo,0,sizeof(was_banklo));
-	memset(was_bankhi,0,sizeof(was_bankhi));
+	memset(current_song->midi_note_tracker,0,sizeof(current_song->midi_note_tracker));
+	memset(current_song->midi_vol_tracker,0,sizeof(current_song->midi_vol_tracker));
+	memset(current_song->midi_ins_tracker,0,sizeof(current_song->midi_ins_tracker));
+	memset(current_song->midi_was_program,0,sizeof(current_song->midi_was_program));
+	memset(current_song->midi_was_banklo,0,sizeof(current_song->midi_was_banklo));
+	memset(current_song->midi_was_bankhi,0,sizeof(current_song->midi_was_bankhi));
 
 	playback_tracing = midi_playback_tracing;
 
@@ -821,9 +804,6 @@ void song_stop_unlocked(int quitting)
 	current_song->vu_right = 0;
 	memset(audio_buffer, 0, audio_buffer_samples * audio_sample_size);
 }
-
-
-
 
 void song_loop_pattern(int pattern, int row)
 {
@@ -1270,162 +1250,7 @@ void cfg_save_audio(cfg_file_t *cfg)
 }
 
 // ------------------------------------------------------------------------------------------------------------
-static void _schism_midi_out_note(song_t *csf, int chan, const song_note_t *starting_note)
-{
-	assert(current_song == csf); // This should only be run on the current song.
 
-	const song_note_t *m = starting_note;
-	unsigned int tc;
-	int m_note;
-
-	unsigned char buf[4];
-	int ins, mc, mg, mbl, mbh;
-	int need_note, need_velocity;
-	song_voice_t *c;
-
-	if (!current_song || !song_is_instrument_mode() || (status.flags & MIDI_LIKE_TRACKER)) return;
-
-	/*if(m)
-	fprintf(stderr, "midi_out_note called (ch %d)note(%d)instr(%d)volcmd(%02X)cmd(%02X)vol(%02X)p(%02X)\n",
-	chan, m->note, m->instrument, m->voleffect, m->effect, m->volparam, m->param);
-	else fprintf(stderr, "midi_out_note called (ch %d) m=%p\n", m);*/
-
-	if (!midi_playing) {
-		csf_process_midi_macro(current_song, 0, current_song->midi_config.start, 0, 0, 0, 0); // START!
-		midi_playing = 1;
-	}
-
-	if (chan < 0) {
-		return;
-	}
-
-	c = &current_song->voices[chan];
-
-	chan %= 64;
-
-	if (!m) {
-		if (last_row_number != (signed) current_song->row) return;
-		m = last_row[chan];
-		if (!m) return;
-	} else {
-		last_row[chan] = m;
-		last_row_number = current_song->row;
-	}
-
-	ins = ins_tracker[chan];
-	if (m->instrument > 0) {
-		ins = m->instrument;
-	}
-	if (ins < 0 || ins >= MAX_INSTRUMENTS)
-		return; /* err...  almost certainly */
-	if (!current_song->instruments[ins]) return;
-
-	if (current_song->instruments[ins]->midi_channel_mask >= 0x10000) {
-		mc = chan % 16;
-	} else {
-		mc = 0;
-		if(current_song->instruments[ins]->midi_channel_mask > 0)
-			while(!(current_song->instruments[ins]->midi_channel_mask & (1 << mc)))
-				++mc;
-	}
-
-	m_note = m->note;
-	tc = current_song->tick_count % current_song->current_speed;
-#if 0
-printf("channel = %d note=%d starting_note=%p\n",chan,m_note,starting_note);
-#endif
-	if (m->effect == FX_SPECIAL) {
-		switch (m->param & 0xF0) {
-		case 0xC0: /* note cut */
-			if (tc == (((unsigned)m->param) & 15)) {
-				m_note = NOTE_CUT;
-			} else if (tc != 0) return;
-			break;
-
-		case 0xD0: /* note delay */
-			if (tc != (((unsigned)m->param) & 15)) return;
-			break;
-		default:
-			if (tc != 0) return;
-		};
-	} else {
-		if (tc != 0 && !starting_note) return;
-	}
-
-	need_note = need_velocity = -1;
-	if (m_note > 120) {
-		if (note_tracker[chan] != 0) {
-			csf_process_midi_macro(current_song, chan, current_song->midi_config.note_off,
-				0, note_tracker[chan], 0, ins_tracker[chan]);
-		}
-
-		note_tracker[chan] = 0;
-		if (m->voleffect != VOLFX_VOLUME) {
-			vol_tracker[chan] = 64;
-		} else {
-			vol_tracker[chan] = m->voleffect;
-		}
-	} else if (!m->note && m->voleffect == VOLFX_VOLUME) {
-		vol_tracker[chan] = m->volparam;
-		need_velocity = vol_tracker[chan];
-
-	} else if (m->note) {
-		if (note_tracker[chan] != 0) {
-			csf_process_midi_macro(current_song, chan, current_song->midi_config.note_off,
-				0, note_tracker[chan], 0, ins_tracker[chan]);
-		}
-		note_tracker[chan] = m_note;
-		if (m->voleffect != VOLFX_VOLUME) {
-			vol_tracker[chan] = 64;
-		} else {
-			vol_tracker[chan] = m->volparam;
-		}
-		need_note = note_tracker[chan];
-		need_velocity = vol_tracker[chan];
-	}
-
-	if (m->instrument > 0) {
-		ins_tracker[chan] = ins;
-	}
-
-	mg = (current_song->instruments[ins]->midi_program)
-		+ ((midi_flags & MIDI_BASE_PROGRAM1) ? 1 : 0);
-	mbl = current_song->instruments[ins]->midi_bank;
-	mbh = (current_song->instruments[ins]->midi_bank >> 7) & 127;
-
-	if (mbh > -1 && was_bankhi[mc] != mbh) {
-		buf[0] = 0xB0 | (mc & 15); // controller
-		buf[1] = 0x00; // corse bank/select
-		buf[2] = mbh; // corse bank/select
-		csf_midi_send(current_song, buf, 3, 0, 0);
-		was_bankhi[mc] = mbh;
-	}
-	if (mbl > -1 && was_banklo[mc] != mbl) {
-		buf[0] = 0xB0 | (mc & 15); // controller
-		buf[1] = 0x20; // fine bank/select
-		buf[2] = mbl; // fine bank/select
-		csf_midi_send(current_song, buf, 3, 0, 0);
-		was_banklo[mc] = mbl;
-	}
-	if (mg > -1 && was_program[mc] != mg) {
-		was_program[mc] = mg;
-		csf_process_midi_macro(current_song, chan, current_song->midi_config.set_program,
-			mg, 0, 0, ins); // program change
-	}
-	if (c->flags & CHN_MUTE) {
-		// don't send noteon events when muted
-	} else if (need_note > 0) {
-		if (need_velocity == -1) need_velocity = 64; // eh?
-		need_velocity = CLAMP(need_velocity*2,0,127);
-		csf_process_midi_macro(current_song, chan, current_song->midi_config.note_on,
-			0, need_note, need_velocity, ins); // noteon
-	} else if (need_velocity > -1 && note_tracker[chan] > 0) {
-		need_velocity = CLAMP(need_velocity*2,0,127);
-		csf_process_midi_macro(current_song, chan, current_song->midi_config.set_volume,
-			need_velocity, note_tracker[chan], need_velocity, ins); // volume-set
-	}
-
-}
 static void _schism_midi_out_raw(song_t *csf, const unsigned char *data, uint32_t len, uint32_t pos)
 {
 	assert(current_song == csf); // AGH!
@@ -1481,6 +1306,29 @@ const char *song_audio_device(void)
 	return device_name ? device_name : "unknown";
 }
 
+uint32_t song_audio_device_id(void)
+{
+	// only really accurate if audio is initialized
+	return device_id;
+}
+
+static int audio_lookup_device_name(const char *device, uint32_t *device_id)
+{
+	const uint32_t devices_size = backend->device_count();
+
+	for (uint32_t i = 0; i < devices_size; i++) {
+		const char *n = backend->device_name(i);
+		if (!n) continue; // should never happen, hopefully...
+
+		if (!strcmp(n, device)) {
+			*device_id = i;
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 static void _cleanup_audio_device(void)
 {
 	if (current_audio_device) {
@@ -1490,10 +1338,12 @@ static void _cleanup_audio_device(void)
 
 		free(device_name);
 		device_name = NULL;
+
+		device_id = 0;
 	}
 }
 
-static int _audio_open_device(const char *device, int verbose)
+static int _audio_open_device(uint32_t device, int verbose)
 {
 	_cleanup_audio_device();
 
@@ -1527,42 +1377,27 @@ static int _audio_open_device(const char *device, int verbose)
 //			put_env_var("AUDIODEV", "hw");
 //	}
 
-	schism_audio_spec_t desired = {
-		.freq = audio_settings.sample_rate,
-		.bits = audio_settings.bits,
-		.channels = audio_settings.channels,
-		.samples = size_pow2,
-		.callback = audio_callback,
-	};
+	schism_audio_spec_t desired = {0};
+	desired.freq = audio_settings.sample_rate;
+	desired.bits = audio_settings.bits;
+	desired.channels = audio_settings.channels;
+	desired.samples = size_pow2;
+	desired.callback = audio_callback;
+
 	schism_audio_spec_t obtained;
 
-	if (device && *device) {
-		uint32_t devices_size = backend->device_count();
-		uint32_t x = AUDIO_BACKEND_DEFAULT;
-
-		for (uint32_t i = 0; i < devices_size; i++) {
-			const char *n = backend->device_name(i);
-			if (!n) // what
-				continue;
-
-			if (!strcmp(n, device)) {
-				x = i;
-				break;
-			}
-		}
-
-		if (x != AUDIO_BACKEND_DEFAULT && (current_audio_device = backend->open_device(x, &desired, &obtained))) {
-			device_name = str_dup(device);
+	if (device != AUDIO_BACKEND_DEFAULT) {
+		if ((current_audio_device = backend->open_device(device, &desired, &obtained))) {
+			device_name = str_dup(backend->device_name(device));
+			device_id = device;
 			goto success;
-		} else if (strcmp(device, "default")) { // don't warn if the user wanted default device
-			log_nl();
-			log_appendf(4, "Failed to open configured audio device! Falling back to default...");
 		}
 	}
 
 	current_audio_device = backend->open_device(AUDIO_BACKEND_DEFAULT, &desired, &obtained);
 	if (current_audio_device) {
 		device_name = str_dup("default"); // ????
+		device_id = AUDIO_BACKEND_DEFAULT;
 		goto success;
 	}
 
@@ -1593,25 +1428,39 @@ success:
 	return 1;
 }
 
-static int _audio_try_driver(const char *driver, const char *device, int verbose)
+static int _audio_try_driver(const schism_audio_backend_t *backend_passed, const char *driver, const char *device, int verbose)
 {
-	if (!backend)
-		return 0;
+	const schism_audio_backend_t *backend_restore = backend;
+
+	uint32_t id;
+
+	backend = backend_passed;
 
 	if (backend->init_driver(driver))
 		return 0;
 
 	driver_name = str_dup(driver);
 
-	if (_audio_open_device(device, verbose)) {
+	if (audio_lookup_device_name(device, &id)) {
+		// nothing
+	} else if (!strcmp(device, "default") || !*device) {
+		id = AUDIO_BACKEND_DEFAULT;
+	} else {
+		goto fail;
+	}
+
+	if (_audio_open_device(id, verbose)) {
 		audio_was_init = 1;
 		refresh_audio_device_list();
 		return 1;
 	}
 
+fail:
 	backend->quit_driver();
 	free(driver_name);
 	driver_name = NULL;
+
+	backend = backend_restore;
 
 	return 0;
 }
@@ -1650,6 +1499,17 @@ void audio_flash_reinitialized_text(int success) {
 	}
 }
 
+static const schism_audio_backend_t *audio_driver_in_list_(const char *driver)
+{
+	size_t i;
+
+	for (i = 0; i < full_drivers.size; i++)
+		if (!strcmp(full_drivers.list[i].name, driver))
+			return full_drivers.list[i].backend;
+
+	return NULL;
+}
+
 /* driver == NULL || device == NULL is fine here */
 int audio_init(const char *driver, const char *device)
 {
@@ -1672,10 +1532,12 @@ int audio_init(const char *driver, const char *device)
 		: (!strcmp(driver, "directsound")) ? "dsound"
 		: driver;
 
-#if defined(SCHISM_SDL12) || defined(SCHISM_SDL2)
+#if defined(SCHISM_SDL12) || defined(SCHISM_SDL2) || defined(SCHISM_SDL3)
 	/* we ought to allow this envvar to work under SDL. */
-	if (!driver || !*driver)
-		driver = getenv("SDL_AUDIODRIVER");
+	if (!*driver) {
+		const char *n = getenv("SDL_AUDIODRIVER");
+		if (n) driver = n;
+	}
 #endif
 
 	// Initialize all backends (for audio driver listing)
@@ -1689,27 +1551,26 @@ int audio_init(const char *driver, const char *device)
 	}
 
 	if (full_drivers.size > 0) {
-		if (driver && *driver) {
-			for (i = 0; i < full_drivers.size; i++) {
-				if (strcmp(full_drivers.list[i].name, driver))
-					continue;
+		const schism_audio_backend_t *backend_driver = (driver && *driver) ? audio_driver_in_list_(driver) : NULL;
 
-				backend = full_drivers.list[i].backend;
-				if ((success = _audio_try_driver(driver, device, 1)))
-					goto agh;
-				backend = NULL;
-			}
+		if (backend_driver) {
+			if ((success = _audio_try_driver(backend_driver, driver, device, 1)))
+				goto agh;
 
-			log_nl();
-			log_appendf(4, "Failed to load requested audio driver `%s`!", driver);
+			if (!*device && (success = _audio_try_driver(backend_driver, driver, "", 1)))
+				goto agh;
 		}
 
 		for (i = 0; i < full_drivers.size; i++) {
-			backend = full_drivers.list[i].backend;
-			if ((success = _audio_try_driver(full_drivers.list[i].name, device, 1)))
+			if ((success = _audio_try_driver(full_drivers.list[i].backend, full_drivers.list[i].name, device, 1)))
 				goto agh;
-			backend = NULL;
+
+			if (!*device && (success = _audio_try_driver(full_drivers.list[i].backend, full_drivers.list[i].name, "", 1)))
+				goto agh;
 		}
+
+		log_nl();
+		log_appendf(4, "Failed to load requested audio driver `%s`!", driver);
 	}
 
 agh:
@@ -1724,7 +1585,8 @@ agh:
 	return 0;
 }
 
-int audio_reinit(const char *device)
+// device is optional and can be NULL
+int audio_reinit(uint32_t *device)
 {
 	if (status.flags & (DISKWRITER_ACTIVE|DISKWRITER_ACTIVE_PATTERN)) {
 		/* never allowed */
@@ -1736,7 +1598,9 @@ int audio_reinit(const char *device)
 	if (status.flags & CLASSIC_MODE)
 		song_stop();
 
-	success = _audio_open_device(device, 0);
+	// if we got a device, cool, otherwise use our device ID,
+	// which (fingers crossed!) is the same one as last time.
+	success = _audio_open_device(device ? *device : device_id, 0);
 	_audio_init_tail();
 
 	audio_flash_reinitialized_text(success);
@@ -1796,7 +1660,7 @@ void song_init_modplug(void)
 	audio_buffers_per_second = (current_song->mix_frequency / (audio_buffer_samples * 8 * audio_sample_size));
 	if (audio_buffers_per_second > 1) audio_buffers_per_second--;
 
-	csf_init_midi(current_song, _schism_midi_out_note, _schism_midi_out_raw);
+	csf_init_midi(current_song, _schism_midi_out_raw);
 
 	song_unlock_audio();
 }

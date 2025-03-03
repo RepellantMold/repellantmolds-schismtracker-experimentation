@@ -861,11 +861,11 @@ SCHISM_CONST const char* charset_iconv_error_lookup(charset_error_t err)
  * [out] must be free'd by the caller */
 CHARSET_VARIATION(internal)
 {
-	charset_decode_t decoder = {
-		.in = in,
-		.offset = 0,
-		.size = insize,
-	};
+	charset_decode_t decoder = {0};
+
+	decoder.in = in;
+	decoder.offset = 0;
+	decoder.size = insize;
 
 	if (inset >= ARRAY_SIZE(conv_to_ucs4_funcs) || outset >= ARRAY_SIZE(conv_from_ucs4_funcs))
 		return CHARSET_ERROR_UNIMPLEMENTED;
@@ -911,6 +911,10 @@ CHARSET_VARIATION(internal)
 # ifndef kTECOutputBufferFullStatus
 #  define kTECOutputBufferFullStatus -8785
 # endif
+#elif defined(SCHISM_OS2)
+# include <uconv.h>
+# define INCL_DOS
+# include <os2.h>
 #endif
 
 typedef charset_error_t (*charset_impl)(const void* in, void* out, charset_t inset, charset_t outset, size_t insize);
@@ -996,6 +1000,35 @@ static charset_error_t charset_iconv_macos_preprocess_(const void *in, size_t in
 }
 #endif
 
+#ifdef SCHISM_OS2
+static inline int charset_os2_get_sys_cp(ULONG *pcp)
+{
+	ULONG aulCP[3];
+	ULONG cCP;
+
+	if (DosQueryCp(sizeof(aulCP), aulCP, &cCP))
+		return 0;
+
+	*pcp = aulCP[0];
+
+	return 1;
+}
+
+static inline int charset_os2_uconv_build(ULONG cp, UconvObject *puconv)
+{
+	UniChar cpname[16];
+	{
+		char buf[16];
+
+		snprintf(buf, 16, "IBM-%lu", cp);
+
+		for (size_t i = 0; i < 16; i++) cpname[i] = buf[i];
+	}
+
+	return !UniCreateUconvObject(cpname, puconv);
+}
+#endif
+
 charset_error_t charset_iconv(const void* in, void* out, charset_t inset, charset_t outset, size_t insize) {
 	// This is so we can do charset-specific hacks...
 	charset_t insetfake = inset, outsetfake = outset;
@@ -1016,18 +1049,69 @@ charset_error_t charset_iconv(const void* in, void* out, charset_t inset, charse
 	switch (inset) {
 #ifdef SCHISM_WIN32
 	case CHARSET_ANSI: {
-		// convert ANSI to Unicode so we can process it
-		int needed = MultiByteToWideChar(CP_ACP, 0, in, (insize == SIZE_MAX) ? -1 : insize, NULL, 0);
-		if (!needed)
-			return CHARSET_ERROR_DECODE;
+		UINT cp = GetACP();
 
-		wchar_t *unicode_in = mem_alloc((needed + 1) * sizeof(wchar_t));
-		MultiByteToWideChar(CP_ACP, 0, in, (insize == SIZE_MAX) ? -1 : insize, unicode_in, needed);
-		unicode_in[needed] = 0;
+		if (cp == 1252) {
+			insetfake = inset = CHARSET_WINDOWS1252;
+		} else if (cp == 437) {
+			insetfake = inset = CHARSET_CP437;
+		} else {
+			// convert ANSI to Unicode so we can process it
+			int needed = MultiByteToWideChar(CP_ACP, 0, in, (insize == SIZE_MAX) ? -1 : insize, NULL, 0);
+			if (!needed)
+				return CHARSET_ERROR_DECODE;
 
-		infake = unicode_in;
-		insetfake = CHARSET_WCHAR_T;
-		insizefake = (needed + 1) * sizeof(wchar_t);
+			wchar_t *unicode_in = mem_alloc((needed + 1) * sizeof(wchar_t));
+			MultiByteToWideChar(CP_ACP, 0, in, (insize == SIZE_MAX) ? -1 : insize, unicode_in, needed);
+			unicode_in[needed] = 0;
+
+			infake = unicode_in;
+			insetfake = CHARSET_WCHAR_T;
+			insizefake = (needed + 1) * sizeof(wchar_t);
+		}
+		break;
+	}
+#endif
+#ifdef SCHISM_OS2
+	case CHARSET_DOSCP: {
+		ULONG cp;
+		if (!charset_os2_get_sys_cp(&cp))
+			return CHARSET_ERROR_UNIMPLEMENTED;
+
+		if (cp == 437) {
+			insetfake = inset = CHARSET_CP437;
+		} else if (cp == 1252) {
+			insetfake = inset = CHARSET_WINDOWS1252;
+		} else {
+			UconvObject uc;
+			if (!charset_os2_uconv_build(cp, &uc))
+				return CHARSET_ERROR_UNIMPLEMENTED; // probably
+
+			size_t alloc = 0;
+			uint16_t *ucs2 = NULL;
+			for (;;) {
+				free(ucs2);
+
+				alloc = (alloc) ? (alloc * 2) : 128;
+				ucs2 = mem_alloc(alloc * sizeof(*ucs2));
+
+				int rc = UniStrToUcs(uc, ucs2, (CHAR *)in, alloc);
+
+				if (rc == ULS_SUCCESS) {
+					break;
+				} else if (rc == ULS_BUFFERFULL) {
+					continue;
+				} else {
+					// some error decoding
+					free(ucs2);
+					return CHARSET_ERROR_DECODE;
+				}
+			}
+
+			infake = ucs2;
+			insetfake = CHARSET_UCS2;
+			insizefake = alloc * sizeof(*ucs2);
+		}
 		break;
 	}
 #endif
@@ -1041,6 +1125,7 @@ charset_error_t charset_iconv(const void* in, void* out, charset_t inset, charse
 			return state;
 
 		insetfake = CHARSET_UTF16;
+		break;
 	}
 #endif
 	default: break;
@@ -1048,15 +1133,36 @@ charset_error_t charset_iconv(const void* in, void* out, charset_t inset, charse
 
 	switch (outset) {
 #ifdef SCHISM_WIN32
-	case CHARSET_ANSI:
-		// TODO built in Windows-1252 encoder?
-		outsetfake = CHARSET_WCHAR_T;
+	case CHARSET_ANSI: {
+		UINT cp = GetACP();
+
+		if (cp == 437) {
+			outsetfake = outset = CHARSET_CP437;
+		} else {
+			// TODO built in Windows-1252 encoder?
+			outsetfake = CHARSET_WCHAR_T;
+		}
 		break;
+	}
 #endif
 #ifdef SCHISM_MACOS
 	case CHARSET_HFS:
 		outsetfake = CHARSET_UTF16;
 		break;
+#endif
+#ifdef SCHISM_OS2
+	case CHARSET_DOSCP: {
+		ULONG cp;
+		if (!charset_os2_get_sys_cp(&cp))
+			return CHARSET_ERROR_UNIMPLEMENTED;
+
+		if (cp == 437) {
+			outsetfake = outset = CHARSET_CP437;
+		} else {
+			outsetfake = CHARSET_UCS2;
+		}
+		break;
+	}
 #endif
 	default: break;
 	}
@@ -1071,6 +1177,11 @@ charset_error_t charset_iconv(const void* in, void* out, charset_t inset, charse
 #endif
 #ifdef SCHISM_MACOS
 	case CHARSET_HFS:
+		free((void *)infake);
+		break;
+#endif
+#ifdef SCHISM_OS2
+	case CHARSET_DOSCP:
 		free((void *)infake);
 		break;
 #endif
@@ -1102,6 +1213,42 @@ charset_error_t charset_iconv(const void* in, void* out, charset_t inset, charse
 		break;
 	}
 #endif
+#ifdef SCHISM_OS2
+	case CHARSET_DOSCP: {
+		ULONG cp;
+		if (!charset_os2_get_sys_cp(&cp))
+			return CHARSET_ERROR_UNIMPLEMENTED;
+
+		UconvObject uc;
+		if (!charset_os2_uconv_build(cp, &uc))
+			return CHARSET_ERROR_UNIMPLEMENTED; // probably
+
+		size_t alloc = 256;
+		CHAR *sys = NULL;
+		for (;;) {
+			free(sys);
+
+			sys = mem_alloc(alloc * sizeof(*sys));
+
+			int rc = UniStrFromUcs(uc, sys, (UniChar *)outfake, alloc);
+
+			if (rc == ULS_SUCCESS) {
+				break;
+			} else if (rc == ULS_BUFFERFULL) {
+				alloc *= 2;
+				continue;
+			} else {
+				return CHARSET_ERROR_DECODE;
+			}
+		}
+
+		free(outfake);
+
+		memcpy(out, &sys, sizeof(void *));
+
+		break;
+	}
+#endif
 #ifdef SCHISM_MACOS
 	case CHARSET_HFS: {
 		/* FIXME This doesn't work? I don't really know why */
@@ -1113,8 +1260,10 @@ charset_error_t charset_iconv(const void* in, void* out, charset_t inset, charse
 		TextEncoding utf16enc = CreateTextEncoding(kTextEncodingUnicodeDefault, kTextEncodingDefaultVariant, kUnicode16BitFormat);
 
 		state = charset_iconv_macos_preprocess_(outfake, len, utf16enc, hfsenc, out, NULL);
-		if (state != CHARSET_ERROR_SUCCESS)
-			return state;
+
+		free(outfake);
+
+		break;
 	}
 #endif
 	default:
