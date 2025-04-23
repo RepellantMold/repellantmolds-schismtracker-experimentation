@@ -92,7 +92,7 @@ conflict with other ones. I've organized them pretty much in order of popularity
 READ_INFO(xm) LOAD_SONG(xm)
 READ_INFO(it) LOAD_SONG(it) SAVE_SONG(it)
 READ_INFO(mt2)
-READ_INFO(mtm) LOAD_SONG(mtm)
+READ_INFO(mtm) LOAD_SONG(mtm) SAVE_SONG(mtm)
 READ_INFO(ntk)
 READ_INFO(mdl) LOAD_SONG(mdl)
 READ_INFO(med)
@@ -139,7 +139,7 @@ READ_INFO(ogg)
 
 /* STM seems to have a case insensitive magic string with several possible values, and only one byte
 is guaranteed to be the same in the whole file... yeagh. */
-READ_INFO(stm) LOAD_SONG(stm)
+READ_INFO(stm) LOAD_SONG(stm) SAVE_SONG(stm)
 
 /* An ID3 tag could actually be anywhere in an MP3 file, and there's no guarantee that it even exists
 at all. I might move this toward the top if I can figure out how to identify an MP3 more precisely. */

@@ -299,7 +299,7 @@ void read_lined_message(char *msg, slurp_t *fp, int len, int linelen)
 // st2MixingRate = (st2MixingRate >= 0)
 //                 ? (int32_t) (st2MixingRate / (samplesPerTick * 2))
 //                 : (int32_t)((st2MixingRate - ((samplesPerTick * 2) - 1)) / (samplesPerTick * 2));
-static uint8_t st2_tempo_table[15][16] = {
+const uint8_t st2_tempo_table[15][16] = {
 	{ 125,  117,  110,  102,   95,   87,   80,   72,   62,   55,   47,   40,   32,   25,   17,   10, },
 	{ 125,  122,  117,  115,  110,  107,  102,  100,   95,   90,   87,   82,   80,   75,   72,   67, },
 	{ 125,  125,  122,  120,  117,  115,  112,  110,  107,  105,  102,  100,   97,   95,   92,   90, },

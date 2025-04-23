@@ -50,5 +50,7 @@ extern const char *midi_group_names[17];
 extern const char *midi_program_names[128];
 extern const char *midi_percussion_names[61];
 
+extern const uint8_t st2_tempo_table[15][16];
+
 #endif /* SCHISM_PLAYER_TABLES_H_ */
 

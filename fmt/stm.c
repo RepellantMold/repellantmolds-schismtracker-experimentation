@@ -26,8 +26,13 @@
 #include "slurp.h"
 #include "fmt.h"
 #include "mem.h"
+#include "version.h"
+#include "log.h"
 
 #include "player/sndfile.h"
+
+
+static int stm_import_edittime(song_t *song, uint16_t trkvers, uint32_t reserved32);
 
 /* --------------------------------------------------------------------- */
 
@@ -191,6 +196,27 @@ int fmt_stm_load_song(song_t *song, slurp_t *fp, unsigned int lflags)
 		sprintf(song->tracker_id, "SoundWave Pro %1d.%02d", CLAMP(tmp[2], 0, 9), CLAMP(tmp[3], 0, 99));
 	else if (!memcmp(id, "!Scrvrt!", 8))
 		sprintf(song->tracker_id, "Screamverter");
+	else if (!memcmp(id, "!JadeST!", 8)) {
+		slurp_seek(fp, 35, SEEK_SET);
+		uint16_t trkvers, msglen;
+		uint32_t trkvers2, edittime;
+		slurp_read(fp, &trkvers, 2);
+		trkvers = bswapLE16(trkvers);
+		slurp_read(fp, &trkvers2, 4);
+		trkvers2 = bswapLE32(trkvers2);
+		slurp_read(fp, &edittime, 4);
+		edittime = bswapLE32(edittime);
+		slurp_read(fp, &msglen, 2);
+		msglen = bswapLE16(msglen);
+		sprintf(song->tracker_id, "Schism Tracker (RM fork) ");
+		ver_decode_cwtv(trkvers, trkvers2, song->tracker_id + strlen(song->tracker_id));
+		stm_import_edittime(song, 0x0000, trkvers2);
+		if (msglen != 0) {
+			slurp_seek(fp, -msglen, SEEK_END);
+			slurp_read(fp, song->message, msglen);
+			song->message[msglen] = '\0';
+		}
+	}
 	else
 		sprintf(song->tracker_id, "Unknown");
 
@@ -287,3 +313,418 @@ int fmt_stm_load_song(song_t *song, slurp_t *fp, unsigned int lflags)
 	return LOAD_SUCCESS;
 }
 
+
+/* --------------------------------------------------------------------- */
+
+static int stm_import_edittime(song_t *song, uint16_t trkvers, uint32_t reserved32)
+{
+	if (song->histlen)
+		return 0; // ?
+
+	song->histlen = 1;
+	song->history = mem_calloc(1, sizeof(*song->history));
+
+	uint32_t runtime = it_decode_edit_timer(trkvers, reserved32);
+	song->history[0].runtime = dos_time_to_ms(runtime);
+
+	return 1;
+}
+
+enum {
+	WARN_LINEARSLIDES,
+	WARN_SAMPLEVOL,
+	WARN_LOOPS,
+	WARN_SAMPLEVIB,
+	WARN_INSTRUMENTS,
+	WARN_PATTERNLEN,
+	WARN_MAXCHANNELS,
+	WARN_NOTERANGE,
+	WARN_EFFECTS,
+	WARN_VOLEFFECTS,
+	WARN_MAXSAMPLES,
+	WARN_LONGSAMPLES,
+	WARN_MAXPATS,
+	WARN_BREAKOTHERROWS,
+	WARN_FINESLIDES,
+	WARN_EFFECTMEMORY,
+
+	MAX_WARN
+};
+
+static const char *stm_warnings[] = {
+	[WARN_LINEARSLIDES] = "Linear slides",
+	[WARN_SAMPLEVOL]    = "Sample volumes",
+	[WARN_LOOPS]        = "Sustain and Ping Pong loops",
+	[WARN_SAMPLEVIB]    = "Sample vibrato",
+	[WARN_INSTRUMENTS]  = "Instrument functions",
+	[WARN_PATTERNLEN]   = "Pattern lengths other than 64 rows",
+	[WARN_MAXCHANNELS]  = "Data outside 4 channels",
+	[WARN_NOTERANGE]    = "Notes outside the range C-4 to B-6",
+	[WARN_EFFECTS]      = "Effects K - Z",
+	[WARN_VOLEFFECTS]   = "Extended volume column effects",
+	[WARN_MAXSAMPLES]   = "Over 31 samples",
+	[WARN_LONGSAMPLES]  = "sample length greater than 65535",
+	[WARN_MAXPATS]      = "Over 63 patterns",
+	[WARN_BREAKOTHERROWS]="Breaking to any other rows besides 0",
+	[WARN_FINESLIDES]   = "(Extra-)Fine volume/portamento slides",
+	[WARN_EFFECTMEMORY] = "Effect memory",
+
+	[MAX_WARN]          = NULL
+};
+
+static int write_stm_sample(struct stm_sample *hdr, disko_t *fp)
+{
+#define WRITE_VALUE(x) do { disko_write(fp, &hdr->x, sizeof(hdr->x)); } while (0)
+
+	WRITE_VALUE(name);
+	disko_seek(fp, 1, SEEK_CUR); // zero
+	disko_seek(fp, 1, SEEK_CUR); // inst_disk
+	WRITE_VALUE(pcmpara);
+	WRITE_VALUE(length);
+	WRITE_VALUE(loop_start);
+	WRITE_VALUE(loop_end);
+	WRITE_VALUE(volume);
+	disko_seek(fp, 1, SEEK_CUR); // reserved
+	WRITE_VALUE(c5speed);
+	disko_seek(fp, 4, SEEK_CUR); // morejunk
+	disko_seek(fp, 2, SEEK_CUR); // paragraphs (? what)
+
+#undef WRITE_VALUE
+
+	return 1;
+}
+
+// RM: directly taken from Screamverter
+static uint8_t calculate_tempo_scale(uint8_t speed, uint8_t tempo)
+{
+	unsigned int calculated_tempo;
+	unsigned int original_tempo;
+	signed int tempo_difference = 0;
+	signed int speed_difference = 0;
+
+	if (speed == 0 || tempo == 0) {
+		speed = 6;
+		tempo = 125;
+	}
+	speed = MIN(15, speed);
+	original_tempo = (tempo * 6) / speed;
+	for (int i = 15; i > 0; --i) {
+		for (int j = 0; j < 16; ++j) {
+		calculated_tempo = (st2_tempo_table[i - 1][j] * 6) / i;
+		tempo_difference = original_tempo - calculated_tempo;
+		speed_difference = speed - i;
+
+		if (calculated_tempo == original_tempo ||
+			((tempo_difference >= -2 && tempo_difference <= 2) &&
+			(speed_difference >= -1 && speed_difference <= 1))) 
+			return (i << 4) | j;
+		}
+	}
+
+	return tempo;
+}
+
+int fmt_stm_save_song(disko_t *fp, song_t *song)
+{
+	char stm_songtitle[20];
+	uint8_t stm_orders[128];
+	uint8_t tmp[128];
+	uint32_t para_sdata[MAX_SAMPLES];
+	uint8_t speed = song->initial_speed;
+	uint8_t tempo = song->initial_tempo;
+
+	int nord, nsmp, npat, maxpat, jmax, joutpos;
+	int i, j, n;
+	unsigned int warn = 0;
+
+	if (song->flags & SONG_INSTRUMENTMODE)
+		warn |= 1 << WARN_INSTRUMENTS;
+	if (song->flags & SONG_LINEARSLIDES)
+		warn |= 1 << WARN_LINEARSLIDES;
+	npat = csf_get_num_patterns(song);
+	if (npat > 63) {
+		npat = 63;
+		warn |= 1 << WARN_MAXPATS;
+	}
+	nsmp = csf_get_num_samples(song); // Getting number of samples
+	if (nsmp > 31) {
+		nsmp = 31;
+		warn |= 1 << WARN_MAXSAMPLES;
+	}
+	nord = csf_get_num_orders(song); // or "csf_get_num_orders(song_t *csf);"
+	if (3 < csf_get_highest_used_channel(song))
+		warn |= 1 << WARN_MAXCHANNELS;
+
+	log_appendf(5, " %d orders, %d samples, %d patterns", nord, nsmp, npat);
+
+	strncpy(stm_songtitle, song->title, 20);
+	disko_write(fp, stm_songtitle, 20); // writing song title
+	disko_write(fp, "!JadeST!\x1a\x02\x02\x15", 12);
+	disko_putc(fp, calculate_tempo_scale(speed, tempo));
+	disko_putc(fp, npat);
+	disko_putc(fp, song->initial_global_volume / 2);
+	{
+		uint16_t cwtv = 0x4000 | ver_cwtv;
+		uint32_t cwtv2 = ver_reserved;
+		uint32_t time = 0;
+		uint16_t msglen = strlen(song->message);
+		for (size_t t = 0; t < song->histlen; t++)
+			time += ms_to_dos_time(song->history[t].runtime);
+
+		// 32-bit DOS tick count (tick = 1/18.2 second; 54945 * 18.2 = 999999 which is Close Enough)
+		time += it_get_song_elapsed_dos_time(song);
+
+		tmp[0] = cwtv & 0xff;
+		tmp[1] = cwtv >> 8;
+		tmp[2] = cwtv2 & 0xff;
+		tmp[3] = cwtv2 >> 8;
+		tmp[4] = cwtv2 >> 16;
+		tmp[5] = cwtv2 >> 24;
+		tmp[6] = time & 0xff;
+		tmp[7] = time >> 8;
+		tmp[8] = time >> 16;
+		tmp[9] = time >> 24;
+		tmp[10] = msglen & 0xff;
+		tmp[11] = msglen >> 8;
+		tmp[12] = 'J';
+	}
+	disko_write(fp, tmp, 13);
+	disko_seek(fp, 992, SEEK_CUR); // deal with sample headers later
+	memset(stm_orders, 99, 128);
+	for(n = i = 0; (i < nord) && (i < 128); ++i) {
+		if (song->orderlist[i] == ORDER_SKIP || song->orderlist[i] == ORDER_LAST)
+			continue;
+		stm_orders[n++] = song->orderlist[i];
+	}
+	disko_write(fp, stm_orders, 128);
+
+	for(n = 0; n < npat; ++n) {
+		song_note_t *m = song->patterns[n];
+		uint8_t saved_param[4] = {0};
+		if (m == NULL) continue;	
+		jmax = song->pattern_size[n];
+		if(jmax != 64) {
+			if(jmax > 64)
+				jmax = 64;
+			warn |= 1 << WARN_PATTERNLEN;
+		}
+		jmax *= MAX_CHANNELS;
+		for (j = 0; j < jmax; ++j, ++m) {
+			if ((j % MAX_CHANNELS) < 4) {
+				int check_effect_memory = 0;
+				int speed_andor_tempo_specified = 0;
+				song_note_t out = *m;
+				uint8_t stm_fx = 0, stm_fx_val = out.param, stm_vol = out.voleffect == VOLFX_VOLUME ? out.volparam : 65;
+
+				if (out.param)
+					saved_param[j % MAX_CHANNELS] = m->param;
+
+				if ((out.note > 0 && out.note <= 12) || (out.note >= 109 && out.note <= 120)) {
+					warn |= 1 << WARN_NOTERANGE;
+					out.note = 255;
+				} else if (out.note > 12 && out.note < 109) {
+					out.note -= 13;
+					out.note = (out.note % 12) + (((out.note / 12) - 2) << 4);
+				} else if (out.note == NOTE_CUT || out.note == NOTE_OFF) {
+					out.note = 254;
+				} else {
+					out.note = 255;
+				}
+
+				switch(out.effect) {
+					case FX_NONE: stm_fx = stm_fx_val = 0; break;
+					case FX_SPEED:
+						speed = out.param;	
+						speed_andor_tempo_specified = 1;
+						break;
+					case FX_TEMPO:
+						tempo = out.param;
+						speed_andor_tempo_specified = 1;
+						break;
+					case FX_ARPEGGIO: stm_fx = 0x0a; break;
+					case FX_POSITIONJUMP: stm_fx = 0x02; break;
+					case FX_PATTERNBREAK:
+						stm_fx = 0x03;
+						if (stm_fx_val > 0) {
+							warn |= 1 << WARN_BREAKOTHERROWS;
+						}
+						break;
+					case FX_VOLUMESLIDE:
+						stm_fx = 0x04;
+						if (((stm_fx_val & 0x0f) >= 1 && (stm_fx_val >> 4) == 0x0f) ||
+						((stm_fx_val & 0x0f) == 0x0f && (stm_fx_val >> 4) >= 1)) {
+							const uint8_t l = stm_fx_val & 0x0f;
+							const uint8_t h = stm_fx_val >> 4;
+							warn |= 1 << WARN_FINESLIDES;
+							if (l == 0xf)
+								stm_fx_val = CLAMP(h / speed, 1, 0xF) << 4;
+							else if (h == 0xf)
+								stm_fx_val = CLAMP(l / speed, 1, 0xF);
+						}
+						else if ((stm_fx_val & 0x0f) && (stm_fx_val >> 4))
+							stm_fx_val &= 0x0f;
+						check_effect_memory = 1;
+						break;
+					case FX_PORTAMENTODOWN:
+					case FX_PORTAMENTOUP:
+						stm_fx = (out.effect == FX_PORTAMENTOUP) ? 0x06 : 0x05;
+						
+						if (stm_fx_val > 0xdf) {
+							warn |= 1 << WARN_FINESLIDES;
+							const int divisor = speed * (stm_fx_val >> 4) == 0xE ? 4 : 1;
+							stm_fx_val = CLAMP((((stm_fx_val & 0xf) + (divisor - 1)) / (divisor)), 1, 0xF);	
+						}
+						stm_fx_val = MIN(0xdf,stm_fx_val);
+						check_effect_memory = 1;
+						break;
+					case FX_TONEPORTAMENTO:
+						stm_fx = 0x07;
+						check_effect_memory = 1;
+						break;
+					case FX_VIBRATO:
+						stm_fx = 0x08;
+						if ((song->flags & SONG_ITOLDEFFECTS) == 0)
+							stm_fx_val = (stm_fx_val & 0xf0) | CLAMP((stm_fx_val*2),1,0xF);
+						check_effect_memory = 1;
+						break;
+					case FX_TREMOR: stm_fx = 0x09;
+						break;
+					default:
+						warn |= 1 << WARN_EFFECTS;
+						break;
+				}
+
+				if (check_effect_memory && !out.param)
+					stm_fx_val = saved_param[j % MAX_CHANNELS];
+
+				check_effect_memory = 0;
+
+				if (!stm_fx) {
+					switch (out.voleffect) {
+					case VOLFX_NONE:
+					case VOLFX_VOLUME:
+						// ok
+						break;
+					case VOLFX_VOLSLIDEUP:
+						stm_fx = 0x04;
+						stm_fx_val = out.volparam << 4;
+						check_effect_memory = 1;
+						break;
+					case VOLFX_VOLSLIDEDOWN:
+						stm_fx = 0x04;
+						stm_fx_val = out.volparam;
+						check_effect_memory = 1;
+						break;
+					case VOLFX_PORTAUP:
+						stm_fx = 0x06;
+						stm_fx_val = vc_portamento_table[out.volparam & 0xf];
+						check_effect_memory = 1;
+						break;
+					case VOLFX_PORTADOWN:
+						stm_fx = 0x05;
+						stm_fx_val = vc_portamento_table[out.volparam & 0xf];
+						check_effect_memory = 1;
+						break;
+					case VOLFX_TONEPORTAMENTO:
+						stm_fx = 0x3;
+						stm_fx_val = vc_portamento_table[out.volparam & 0xf];
+						check_effect_memory = 1;
+						break;
+					default:
+						/* oh well */
+						warn |= 1 << WARN_VOLEFFECTS;
+						break;
+					}
+				}
+
+				if (check_effect_memory && !m->volparam)
+					stm_fx_val = saved_param[j % MAX_CHANNELS];
+
+				if (!stm_fx && speed_andor_tempo_specified) {
+					stm_fx = 0x01;
+					stm_fx_val = calculate_tempo_scale(speed, tempo);
+				}
+#if 1
+				disko_putc(fp, out.note);
+				disko_putc(fp, (out.instrument << 3) | (stm_vol & 0x07));
+				disko_putc(fp, ((stm_vol & 0x78) << 1) | (stm_fx & 0x0f));
+				disko_putc(fp, stm_fx_val);		
+#else
+				if (out.note == 0xfe && !out.instrument && stm_vol >= 65 && !stm_fx)
+					disko_putc(fp, 0xfd);
+				else if (out.note == 0xff && !out.instrument && stm_vol >= 65 && !stm_fx)
+					disko_putc(fp, 0xfc);
+				else {
+					disko_putc(fp, out.note);
+					disko_putc(fp, (out.instrument << 3) | (stm_vol & 0x07));
+					disko_putc(fp, ((stm_vol & 0x78) << 1) | (stm_fx & 0x0f));
+					disko_putc(fp, stm_fx_val);			
+				}
+#endif
+			}
+		}
+	}
+
+	// Now writing sample data
+	for (n = 0; (n < nsmp) && (n < 31); ++n) {
+		song_sample_t *smp = song->samples + (n + 1);
+		disko_align(fp, 16);
+		para_sdata[n] = disko_tell(fp);	
+		if (smp->data) {
+			csf_write_sample(fp, smp, SF(PCMS,8,M,LE), UINT16_MAX);
+		}
+	}
+
+	disko_write(fp, song->message, strlen(song->message));
+
+	disko_seek(fp, 48, SEEK_SET);
+	// Now writing sample headers
+	for(n = 1; n <= 31; ++n) {
+		song_sample_t *smp = &song->samples[n];
+		struct stm_sample stmsmp;
+		memset(&stmsmp, 0, sizeof(stmsmp));
+		stmsmp.loop_end = 0xffff;
+		if(n <= nsmp) {
+			if(smp->global_volume != 64)
+				warn |= 1 << WARN_SAMPLEVOL;
+			if((smp->flags & (CHN_LOOP | CHN_PINGPONGLOOP)) == (CHN_LOOP | CHN_PINGPONGLOOP) || (smp->flags & CHN_SUSTAINLOOP))
+				warn |= 1 << WARN_LOOPS;
+			if(smp->vib_depth != 0)
+				warn |= 1 << WARN_SAMPLEVIB;
+
+			if (smp->filename[0] != '\0')
+				strncpy((char*)stmsmp.name, smp->filename, 12);
+			else {
+					for (i = 11; i >= 0; i--)
+						if ((smp->name[i] ? smp->name[i] : 32) != 32)
+							break;
+					for (; i >= 0; i--)
+						stmsmp.name[i] = smp->name[i] ? smp->name[i] : 255;
+			}
+
+			stmsmp.length = MIN(0xffff,smp->length);
+			if (smp->flags & CHN_LOOP) {
+				stmsmp.loop_start = MIN(stmsmp.length, smp->loop_start);
+				stmsmp.loop_end = MIN(stmsmp.length, smp->loop_end);
+			} else {
+				stmsmp.loop_start = 0;
+				stmsmp.loop_end = 0xFFFF;
+			}
+			stmsmp.length = bswapLE16(stmsmp.length);
+			stmsmp.loop_start = bswapLE16(stmsmp.loop_start);
+			stmsmp.loop_end = bswapLE16(stmsmp.loop_end);
+			stmsmp.c5speed = bswapLE16(smp->c5speed);
+			stmsmp.volume = stmsmp.length == 0 ? 0 : (smp->volume + 1) / 4;
+			stmsmp.pcmpara = bswapLE16(MIN(0xffff, para_sdata[n-1] >> 4));
+		}
+		write_stm_sample(&stmsmp, fp);
+	}
+
+	/* announce all the things we broke - ripped from s3m.c */
+	for (n = 0; n < MAX_WARN; ++n) {
+		if (warn & (1 << n))
+			log_appendf(4, " Warning: %s unsupported in STM format", stm_warnings[n]);
+	}
+
+	return SAVE_SUCCESS;
+}
